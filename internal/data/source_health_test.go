@@ -202,6 +202,60 @@ func TestFindJSONLPath(t *testing.T) {
 	}
 }
 
+func TestSourceHealthIsDegraded(t *testing.T) {
+	tests := []struct {
+		state HealthState
+		want  bool
+	}{
+		{HealthHealthy, false},
+		{HealthDegraded, true},
+		{HealthFallback, true},
+		{HealthRecovering, true},
+	}
+	for _, tc := range tests {
+		h := SourceHealth{State: tc.state}
+		if got := h.IsDegraded(); got != tc.want {
+			t.Errorf("IsDegraded(state=%s) = %v, want %v", tc.state, got, tc.want)
+		}
+	}
+}
+
+func TestSourceHealthInFallback(t *testing.T) {
+	tests := []struct {
+		state HealthState
+		want  bool
+	}{
+		{HealthHealthy, false},
+		{HealthDegraded, false},
+		{HealthFallback, true},
+		{HealthRecovering, true},
+	}
+	for _, tc := range tests {
+		h := SourceHealth{State: tc.state}
+		if got := h.InFallback(); got != tc.want {
+			t.Errorf("InFallback(state=%s) = %v, want %v", tc.state, got, tc.want)
+		}
+	}
+}
+
+func TestHealthStateString(t *testing.T) {
+	tests := []struct {
+		state HealthState
+		want  string
+	}{
+		{HealthHealthy, "healthy"},
+		{HealthDegraded, "degraded"},
+		{HealthFallback, "fallback"},
+		{HealthRecovering, "recovering"},
+		{HealthState(99), "unknown"},
+	}
+	for _, tc := range tests {
+		if got := tc.state.String(); got != tc.want {
+			t.Errorf("HealthState(%d).String() = %q, want %q", tc.state, got, tc.want)
+		}
+	}
+}
+
 // TestProbeJSONLFallback verifies all three result cases: fresh ok, stale rejected,
 // missing rejected.
 func TestProbeJSONLFallback(t *testing.T) {

@@ -173,6 +173,67 @@ func TestDetectProblemsDeadRigDoesNotSuppressOtherRigZombie(t *testing.T) {
 	}
 }
 
+func TestDoctorProblemsFiltersOK(t *testing.T) {
+	diags := []DoctorDiagnostic{
+		{Name: "git config", Status: "ok", Category: "Git", Explanation: "git is configured"},
+		{Name: "dolt server", Status: "error", Category: "Core", Explanation: "dolt is not running", Commands: []string{"dolt sql-server --port 3307"}},
+		{Name: "tmux", Status: "warn", Category: "Workflow", Explanation: "tmux not detected"},
+	}
+	problems := DoctorProblems(diags)
+	if len(problems) != 2 {
+		t.Fatalf("expected 2 problems (ok filtered out), got %d", len(problems))
+	}
+
+	var errCount, warnCount int
+	for _, p := range problems {
+		if p.Type != "doctor" {
+			t.Errorf("expected type=doctor, got %q", p.Type)
+		}
+		switch p.Severity {
+		case "error":
+			errCount++
+			if p.Fix != "dolt sql-server --port 3307" {
+				t.Errorf("expected first command as Fix, got %q", p.Fix)
+			}
+			if p.Category != "Core" {
+				t.Errorf("expected Category=Core, got %q", p.Category)
+			}
+		case "warn":
+			warnCount++
+		}
+	}
+	if errCount != 1 {
+		t.Errorf("expected 1 error severity, got %d", errCount)
+	}
+	if warnCount != 1 {
+		t.Errorf("expected 1 warn severity, got %d", warnCount)
+	}
+}
+
+func TestDoctorProblemsEmpty(t *testing.T) {
+	if got := DoctorProblems(nil); got != nil {
+		t.Errorf("nil diags should yield nil problems, got %v", got)
+	}
+	if got := DoctorProblems([]DoctorDiagnostic{{Status: "ok"}}); got != nil {
+		t.Errorf("all-ok diags should yield nil problems, got %v", got)
+	}
+}
+
+func TestDoctorProblemsNoFix(t *testing.T) {
+	// A diagnostic without any Commands must still produce a problem; Fix
+	// stays empty rather than panicking on out-of-range access.
+	diags := []DoctorDiagnostic{
+		{Name: "x", Status: "warn", Explanation: "no fix command provided"},
+	}
+	problems := DoctorProblems(diags)
+	if len(problems) != 1 {
+		t.Fatalf("expected 1 problem, got %d", len(problems))
+	}
+	if problems[0].Fix != "" {
+		t.Errorf("expected empty Fix when no commands, got %q", problems[0].Fix)
+	}
+}
+
 func TestDetectProblemsMultiple(t *testing.T) {
 	status := &TownStatus{
 		Agents: []AgentRuntime{

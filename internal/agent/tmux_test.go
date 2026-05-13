@@ -69,6 +69,32 @@ func TestParseAgentPanesNoAgents(t *testing.T) {
 	}
 }
 
+func TestParseAgentPanesDuplicateIssueID(t *testing.T) {
+	// Two panes tagged with the same issue ID — last-write-wins is the
+	// documented behavior of the map-based parser. This pins it.
+	output := "mg-bd-x9z\t%5\nmg-bd-x9z\t%9\n"
+	agents := parseAgentPanes(output)
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 entry after dedup, got %d: %v", len(agents), agents)
+	}
+	if agents["bd-x9z"] != "%9" {
+		t.Errorf("expected last-write-wins (%%9), got %q", agents["bd-x9z"])
+	}
+}
+
+func TestParseAgentPanesGarbledLines(t *testing.T) {
+	// Lines without a tab, lines with empty paneID, and lines with
+	// non-mg- tags must all be silently dropped without panicking.
+	output := "no-tab-here\nmg-bd-aaa\t\nmg-bd-bbb\t%3\nbogus-tag\t%4\n\n"
+	agents := parseAgentPanes(output)
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 valid agent pane, got %d: %v", len(agents), agents)
+	}
+	if agents["bd-bbb"] != "%3" {
+		t.Errorf("expected bd-bbb=%%3, got %v", agents)
+	}
+}
+
 func TestSanitizeCaptureOutput(t *testing.T) {
 	tests := []struct {
 		name     string

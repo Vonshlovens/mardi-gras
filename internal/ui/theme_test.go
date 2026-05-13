@@ -162,3 +162,43 @@ func TestApplyPartialGradientNonEmpty(t *testing.T) {
 		t.Fatal("ApplyPartialMardiGrasGradient(\"hello\", 10) returned empty string")
 	}
 }
+
+func TestRoleColor(t *testing.T) {
+	tests := []struct {
+		name string
+		role string
+		want color.Color
+	}{
+		{"mayor", "mayor", RoleMayor},
+		{"coordinator alias of mayor", "coordinator", RoleMayor},
+		{"deacon", "deacon", RoleDeacon},
+		{"health-check alias of deacon", "health-check", RoleDeacon},
+		{"polecat", "polecat", RolePolecat},
+		{"crew", "crew", RoleCrew},
+		{"witness", "witness", RoleWitness},
+		{"refinery", "refinery", RoleRefinery},
+		{"dog", "dog", RoleDog},
+		{"unknown falls back to default", "frobnicator", RoleDefault},
+		{"empty falls back to default", "", RoleDefault},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RoleColor(tc.role)
+			if got != tc.want {
+				t.Errorf("RoleColor(%q) = %v, want %v", tc.role, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentStateColorPatrolling(t *testing.T) {
+	// Patrolling state was added 2026-05-13; verify it maps to the sky-blue
+	// StatePatrolling color and not the default Idle fallback.
+	if got := AgentStateColor("patrolling"); got != StatePatrolling {
+		t.Errorf("AgentStateColor(\"patrolling\") = %v, want StatePatrolling", got)
+	}
+	if AgentStateColor("patrolling") == AgentStateColor("idle") {
+		t.Error("patrolling and idle must map to distinct colors")
+	}
+}

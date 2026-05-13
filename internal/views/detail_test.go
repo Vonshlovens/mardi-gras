@@ -887,3 +887,83 @@ func TestMetadataRawValuesWithoutSchema(t *testing.T) {
 		t.Error("content should contain raw metadata value")
 	}
 }
+
+func TestSetRichDetailWritesMatchingID(t *testing.T) {
+	issues := []data.Issue{
+		{ID: "mg-001", Title: "Stale", Status: data.StatusOpen,
+			Priority: data.PriorityMedium, IssueType: data.TypeTask, CreatedAt: time.Now()},
+	}
+	d := NewDetail(80, 40, issues)
+	d.SetIssue(&issues[0])
+
+	rich := &data.Issue{
+		ID:                 "mg-001",
+		Notes:              "freshly fetched notes",
+		Design:             "design doc",
+		AcceptanceCriteria: "must roll",
+	}
+	d.SetRichDetail("mg-001", rich)
+
+	if d.Issue.Notes != "freshly fetched notes" {
+		t.Errorf("Notes not written: %q", d.Issue.Notes)
+	}
+	if d.Issue.Design != "design doc" {
+		t.Errorf("Design not written: %q", d.Issue.Design)
+	}
+	if d.Issue.AcceptanceCriteria != "must roll" {
+		t.Errorf("AcceptanceCriteria not written: %q", d.Issue.AcceptanceCriteria)
+	}
+	if d.RichIssueID != "mg-001" {
+		t.Errorf("RichIssueID not set: %q", d.RichIssueID)
+	}
+}
+
+func TestSetRichDetailIgnoresMismatchedID(t *testing.T) {
+	// User scrolled to mg-002 while a `bd show mg-001` fetch was in flight.
+	// The late-arriving rich detail must NOT clobber the now-displayed issue.
+	issues := []data.Issue{
+		{ID: "mg-001", Notes: "should-stay-empty"},
+		{ID: "mg-002", Title: "Selected"},
+	}
+	d := NewDetail(80, 40, issues)
+	d.SetIssue(&issues[1]) // user is now on mg-002
+
+	rich := &data.Issue{ID: "mg-001", Notes: "stale fetch result"}
+	d.SetRichDetail("mg-001", rich)
+
+	if d.Issue.Notes != "" {
+		t.Errorf("mg-002 Notes was clobbered by stale mg-001 fetch: %q", d.Issue.Notes)
+	}
+}
+
+func TestSetRichDetailEmptyFieldsDoNotClobber(t *testing.T) {
+	// Each field has a non-empty guard so a sparse `bd show` response
+	// (e.g. AcceptanceCriteria not yet authored) does not wipe content
+	// that was already populated from the parade JSONL.
+	issues := []data.Issue{
+		{ID: "mg-001", Notes: "existing notes", Design: "existing design"},
+	}
+	d := NewDetail(80, 40, issues)
+	d.SetIssue(&issues[0])
+
+	rich := &data.Issue{ID: "mg-001"} // all rich fields empty
+	d.SetRichDetail("mg-001", rich)
+
+	if d.Issue.Notes != "existing notes" {
+		t.Errorf("empty Notes clobbered existing: %q", d.Issue.Notes)
+	}
+	if d.Issue.Design != "existing design" {
+		t.Errorf("empty Design clobbered existing: %q", d.Issue.Design)
+	}
+}
+
+func TestSetRichDetailNoIssueIsNoOp(t *testing.T) {
+	d := NewDetail(80, 40, nil)
+	// No SetIssue call — d.Issue is nil. SetRichDetail must not panic.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("SetRichDetail panicked with nil Issue: %v", r)
+		}
+	}()
+	d.SetRichDetail("mg-001", &data.Issue{ID: "mg-001", Notes: "x"})
+}

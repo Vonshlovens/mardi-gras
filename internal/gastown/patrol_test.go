@@ -73,6 +73,27 @@ func TestPatrolScanProblemsBothZombiesAndStalls(t *testing.T) {
 	}
 }
 
+func TestPatrolScanProblemsUnknownDetailType(t *testing.T) {
+	// Future-proof: when gt patrol scan adds a new detail type, mg should
+	// surface it as `patrol_<type>` rather than dropping or panicking.
+	scan := &PatrolScanResult{
+		Rig: "test_rig",
+		Details: []PatrolDetail{
+			{Type: "drift", Agent: "Toast", Rig: "test_rig", Role: "polecat", Detail: "agent drifted off task"},
+		},
+	}
+	problems := PatrolScanProblems(scan)
+	if len(problems) != 1 {
+		t.Fatalf("expected 1 problem for unknown type, got %d", len(problems))
+	}
+	if problems[0].Type != "patrol_drift" {
+		t.Errorf("expected patrol_drift (fallback), got %q", problems[0].Type)
+	}
+	if problems[0].Severity != "warn" {
+		t.Errorf("expected warn severity (default), got %q", problems[0].Severity)
+	}
+}
+
 func TestPatrolScanProblemsWithDetails(t *testing.T) {
 	scan := &PatrolScanResult{
 		Rig:     "test_rig",

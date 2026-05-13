@@ -3,6 +3,7 @@ package data
 import (
 	"errors"
 	"os/exec"
+	"slices"
 	"testing"
 	"time"
 )
@@ -106,4 +107,79 @@ func TestSetCmdTimeoutIgnoresZero(t *testing.T) {
 	if timeoutMedium != defaultTimeoutMedium {
 		t.Errorf("timeoutMedium changed on zero input: %v", timeoutMedium)
 	}
+}
+
+func TestBdReadOnlyArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"empty args", []string{}, false},
+		{"nil args", nil, false},
+		{"list", []string{"list", "--json"}, true},
+		{"show", []string{"show", "mg-42"}, true},
+		{"context", []string{"context"}, true},
+		{"doctor", []string{"doctor", "--json"}, true},
+		{"--version", []string{"--version"}, true},
+		{"version", []string{"version"}, true},
+		{"comments read", []string{"comments", "mg-42"}, true},
+		{"comments add is a mutation", []string{"comments", "add", "mg-42", "--", "body"}, false},
+		{"ready plain", []string{"ready"}, true},
+		{"ready --json", []string{"ready", "--json"}, true},
+		{"ready --claim mutates", []string{"ready", "--claim", "--json"}, false},
+		{"prune --dry-run", []string{"prune", "--older-than", "30d", "--dry-run"}, true},
+		{"prune --force mutates", []string{"prune", "--older-than", "30d", "--force"}, false},
+		{"prune with no flag is a mutation", []string{"prune"}, false},
+		{"update is a mutation", []string{"update", "mg-42", "--status=closed"}, false},
+		{"close is a mutation", []string{"close", "mg-42"}, false},
+		{"create is a mutation", []string{"create", "--title=x"}, false},
+		{"note is a mutation", []string{"note", "mg-42", "--", "body"}, false},
+		{"label add is a mutation", []string{"label", "add", "mg-42", "--", "x"}, false},
+		{"dep add is a mutation", []string{"dep", "add", "mg-42", "--", "mg-10"}, false},
+		{"unknown subcommand is not read-only", []string{"frobnicate"}, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := bdReadOnlyArgs(tc.args)
+			if got != tc.want {
+				t.Errorf("bdReadOnlyArgs(%v) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBdChildEnvPinsReadOnlyOnly(t *testing.T) {
+	// Pre-seed BD_DOLT_AUTO_COMMIT in parent env to verify it is stripped on
+	// read-only and pinned to off, but preserved (inherited) on mutations.
+	t.Setenv("BD_DOLT_AUTO_COMMIT", "on")
+	t.Setenv("BD_JSON_ENVELOPE", "1")
+
+	readOnly := bdChildEnv("bd", []string{"list", "--json"})
+	if !hasEnv(readOnly, "BD_JSON_ENVELOPE=0") {
+		t.Errorf("read-only env missing BD_JSON_ENVELOPE=0: %v", readOnly)
+	}
+	if !hasEnv(readOnly, "BD_DOLT_AUTO_COMMIT=off") {
+		t.Errorf("read-only env missing BD_DOLT_AUTO_COMMIT=off: %v", readOnly)
+	}
+	if hasEnv(readOnly, "BD_DOLT_AUTO_COMMIT=on") {
+		t.Errorf("read-only env should strip inherited BD_DOLT_AUTO_COMMIT=on: %v", readOnly)
+	}
+
+	mutate := bdChildEnv("bd", []string{"update", "mg-42", "--status=closed"})
+	if !hasEnv(mutate, "BD_JSON_ENVELOPE=0") {
+		t.Errorf("mutate env missing BD_JSON_ENVELOPE=0: %v", mutate)
+	}
+	if hasEnv(mutate, "BD_DOLT_AUTO_COMMIT=off") {
+		t.Errorf("mutate env should not pin BD_DOLT_AUTO_COMMIT=off (let bd auto-commit): %v", mutate)
+	}
+
+	if env := bdChildEnv("gt", []string{"status", "--json"}); env != nil {
+		t.Errorf("bdChildEnv(gt, ...) should return nil (inherit parent), got %v", env)
+	}
+}
+
+func hasEnv(env []string, want string) bool {
+	return slices.Contains(env, want)
 }

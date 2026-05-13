@@ -260,17 +260,18 @@ func ConvoyPipeline(statuses []string, maxWidth int) string {
 	connOpen := lipgloss.NewStyle().Foreground(Dim).Render("─")
 
 	var b strings.Builder
-	for i := 0; i < n; i++ {
+	var prev string
+	for i, cur := range statuses[:n] {
 		if i > 0 {
-			// Connector color based on left node
-			switch statuses[i-1] {
+			// Connector color based on the previous node.
+			switch prev {
 			case "closed":
 				b.WriteString(connDone)
 			default:
 				b.WriteString(connOpen)
 			}
 		}
-		switch statuses[i] {
+		switch cur {
 		case "closed":
 			b.WriteString(doneStyle.Render("●"))
 		case "in_progress", "hooked":
@@ -278,6 +279,7 @@ func ConvoyPipeline(statuses []string, maxWidth int) string {
 		default:
 			b.WriteString(openStyle.Render("○"))
 		}
+		prev = cur
 	}
 
 	if n < len(statuses) {

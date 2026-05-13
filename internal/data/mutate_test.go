@@ -355,3 +355,100 @@ func TestAddDependencyError(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+func TestFirstLine(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"whitespace only", "   \n\t  \n", ""},
+		{"single line", "hello", "hello"},
+		{"leading whitespace", "  hello  ", "hello"},
+		{"trailing CR trimmed", "hello\r", "hello"},
+		{"multiline", "first line\nsecond\nthird", "first line"},
+		{"leading blank lines", "\n\nactual content\nmore\n", "actual content"},
+		{"trailing newline", "summary line\n", "summary line"},
+		{"trailing whitespace on first line", "summary  \nignored", "summary"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := firstLine(tc.in)
+			if got != tc.want {
+				t.Errorf("firstLine(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrunePreviewArgs(t *testing.T) {
+	calls, restore := mockRunCapture([]byte("Would delete 5 closed issues.\n"), nil)
+	defer restore()
+
+	got, err := PrunePreview("14d")
+	if err != nil {
+		t.Fatalf("PrunePreview() error = %v", err)
+	}
+	if got != "Would delete 5 closed issues." {
+		t.Errorf("PrunePreview() = %q, want first line", got)
+	}
+
+	args := (*calls)[0]
+	if len(args) != 5 || args[0] != "bd" || args[1] != "prune" || args[2] != "--older-than" || args[3] != "14d" || args[4] != "--dry-run" {
+		t.Errorf("args = %v", args)
+	}
+}
+
+func TestPrunePreviewDefaultsTo30d(t *testing.T) {
+	calls, restore := mockRunCapture([]byte("ok"), nil)
+	defer restore()
+	if _, err := PrunePreview(""); err != nil {
+		t.Fatal(err)
+	}
+	args := (*calls)[0]
+	if args[3] != "30d" {
+		t.Errorf("default olderThan = %q, want 30d", args[3])
+	}
+}
+
+func TestPruneClosedArgs(t *testing.T) {
+	calls, restore := mockRunCapture([]byte("Deleted 3 issues.\n"), nil)
+	defer restore()
+
+	got, err := PruneClosed("30d")
+	if err != nil {
+		t.Fatalf("PruneClosed() error = %v", err)
+	}
+	if got != "Deleted 3 issues." {
+		t.Errorf("PruneClosed() = %q, want first line", got)
+	}
+
+	args := (*calls)[0]
+	if len(args) != 5 || args[0] != "bd" || args[1] != "prune" || args[2] != "--older-than" || args[3] != "30d" || args[4] != "--force" {
+		t.Errorf("args = %v", args)
+	}
+}
+
+func TestUpdateTitleArgs(t *testing.T) {
+	calls, restore := mockExecCapture(nil)
+	defer restore()
+
+	if err := UpdateTitle("mg-42", "Switch parade to MQ4"); err != nil {
+		t.Fatalf("UpdateTitle() error = %v", err)
+	}
+
+	args := (*calls)[0]
+	if len(args) != 4 || args[0] != "bd" || args[1] != "update" || args[2] != "mg-42" || args[3] != "--title=Switch parade to MQ4" {
+		t.Errorf("args = %v", args)
+	}
+}
+
+func TestUpdateTitleRejectsBadID(t *testing.T) {
+	_, restore := mockExecCapture(nil)
+	defer restore()
+	if err := UpdateTitle("", "title"); err == nil {
+		t.Fatal("expected ValidateIssueID error, got nil")
+	}
+}

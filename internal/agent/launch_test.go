@@ -103,6 +103,24 @@ func TestDetectRuntimeNoRuntimeAvailable(t *testing.T) {
 	}
 }
 
+func TestRuntimeLabel(t *testing.T) {
+	tests := []struct {
+		runtime Runtime
+		want    string
+	}{
+		{RuntimeClaude, "Claude Code"},
+		{RuntimeCursor, "Cursor"},
+		{Runtime(""), "unknown"},
+		{Runtime("frobnicate"), "unknown"},
+	}
+	for _, tc := range tests {
+		got := tc.runtime.RuntimeLabel()
+		if got != tc.want {
+			t.Errorf("Runtime(%q).RuntimeLabel() = %q, want %q", tc.runtime, got, tc.want)
+		}
+	}
+}
+
 func TestBuildPromptFull(t *testing.T) {
 	now := time.Now()
 	issue := data.Issue{
