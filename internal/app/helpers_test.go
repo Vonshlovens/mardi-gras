@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/matt-wright86/mardi-gras/internal/data"
+	"github.com/matt-wright86/mardi-gras/internal/gastown"
 )
 
 // ---------------------------------------------------------------------------
@@ -224,5 +225,99 @@ func TestConfettiViewNonEmptyWhenActive(t *testing.T) {
 	got := c.View()
 	if got == "" {
 		t.Error("expected non-empty view for active confetti with w/h > 0")
+	}
+}
+
+func TestBuildOrphanedIDsNil(t *testing.T) {
+	if got := buildOrphanedIDs(nil); got != nil {
+		t.Errorf("nil status should yield nil map, got %v", got)
+	}
+}
+
+func TestBuildOrphanedIDsHealthyRig(t *testing.T) {
+	status := &gastown.TownStatus{
+		Rigs: []gastown.RigStatus{{Name: "mardi_gras", PolecatCount: 2}},
+		Agents: []gastown.AgentRuntime{
+			{Name: "obsidian", Role: "polecat", Rig: "mardi_gras", Running: true, HasWork: true, State: "working"},
+		},
+	}
+	if got := buildOrphanedIDs(status); got != nil {
+		t.Errorf("healthy rig should yield nil orphans, got %v", got)
+	}
+}
+
+func TestBuildOrphanedIDsDeadRig(t *testing.T) {
+	status := &gastown.TownStatus{
+		Rigs: []gastown.RigStatus{{Name: "mardi_gras", PolecatCount: 0}},
+		Agents: []gastown.AgentRuntime{
+			{Name: "obsidian", Role: "polecat", Rig: "mardi_gras", Running: false, HookBead: "mg-001"},
+			{Name: "quartz", Role: "polecat", Rig: "mardi_gras", Running: false, HookBead: "mg-002"},
+		},
+	}
+	got := buildOrphanedIDs(status)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 orphan IDs, got %d (%v)", len(got), got)
+	}
+	if !got["mg-001"] || !got["mg-002"] {
+		t.Errorf("expected mg-001 and mg-002 in orphan set, got %v", got)
+	}
+}
+
+func TestBuildZombieIDsNil(t *testing.T) {
+	if got := buildZombieIDs(nil, nil); got != nil {
+		t.Errorf("nil status should yield nil map, got %v", got)
+	}
+}
+
+func TestBuildZombieIDsDeadHookedAgent(t *testing.T) {
+	status := &gastown.TownStatus{
+		Agents: []gastown.AgentRuntime{
+			// Dead but hooked — should be a zombie.
+			{Name: "obsidian", Role: "polecat", Rig: "live_rig", Running: false, HookBead: "lr-001"},
+			// Running — not a zombie.
+			{Name: "quartz", Role: "polecat", Rig: "live_rig", Running: true, HookBead: "lr-002", HasWork: true, State: "working"},
+			// Dead but unhooked — not a zombie.
+			{Name: "granite", Role: "polecat", Rig: "live_rig", Running: false},
+		},
+	}
+	got := buildZombieIDs(status, nil)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 zombie ID, got %d (%v)", len(got), got)
+	}
+	if !got["lr-001"] {
+		t.Errorf("expected lr-001 in zombie set, got %v", got)
+	}
+}
+
+func TestBuildZombieIDsSkipsOrphans(t *testing.T) {
+	// Agent on a dead rig is an orphan, not a zombie — the dead-rig path
+	// handles it. buildZombieIDs must skip these to avoid double counting.
+	status := &gastown.TownStatus{
+		Agents: []gastown.AgentRuntime{
+			{Name: "obsidian", Role: "polecat", Rig: "dead_rig", Running: false, HookBead: "dr-001"},
+			{Name: "stale", Role: "polecat", Rig: "live_rig", Running: false, HookBead: "lr-001"},
+		},
+	}
+	orphans := map[string]bool{"dr-001": true}
+	got := buildZombieIDs(status, orphans)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 zombie (dr-001 suppressed by orphans), got %d (%v)", len(got), got)
+	}
+	if got["dr-001"] {
+		t.Errorf("dr-001 should be suppressed by orphan set, but appeared as zombie: %v", got)
+	}
+	if !got["lr-001"] {
+		t.Errorf("lr-001 should be a zombie, got %v", got)
+	}
+}
+
+func TestBuildZombieIDsNoZombies(t *testing.T) {
+	status := &gastown.TownStatus{
+		Agents: []gastown.AgentRuntime{
+			{Name: "obsidian", Running: true, HookBead: "mg-001", HasWork: true, State: "working"},
+		},
+	}
+	if got := buildZombieIDs(status, nil); got != nil {
+		t.Errorf("healthy agents should yield nil zombies, got %v", got)
 	}
 }

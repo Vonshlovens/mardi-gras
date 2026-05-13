@@ -149,3 +149,38 @@ func TestDeferLabelPast(t *testing.T) {
 		t.Errorf("DeferLabel() with past DeferUntil = %q, want empty", got)
 	}
 }
+
+func TestAgeLabel(t *testing.T) {
+	tests := []struct {
+		name   string
+		offset time.Duration
+		want   string
+	}{
+		{"just created", -10 * time.Second, "just now"},
+		{"30 minutes ago is still 'just now'", -30 * time.Minute, "just now"},
+		{"two hours ago", -2*time.Hour - 30*time.Minute, "2h"},
+		{"23 hours ago", -23 * time.Hour, "23h"},
+		{"exactly 1 day", -25 * time.Hour, "1 day"},
+		{"5 days ago", -5*24*time.Hour - time.Hour, "5 days"},
+		{"29 days ago is still days", -29*24*time.Hour - time.Hour, "29 days"},
+		{"30 days converts to weeks", -30*24*time.Hour - time.Hour, "4 weeks"},
+		{"8 weeks ago", -56*24*time.Hour - time.Hour, "8 weeks"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			iss := Issue{CreatedAt: time.Now().Add(tc.offset)}
+			got := iss.AgeLabel()
+			if got != tc.want {
+				t.Errorf("AgeLabel(offset=%v) = %q, want %q", tc.offset, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgePositive(t *testing.T) {
+	iss := Issue{CreatedAt: time.Now().Add(-time.Hour)}
+	if age := iss.Age(); age < 50*time.Minute || age > 70*time.Minute {
+		t.Errorf("Age() = %v, want ~1h", age)
+	}
+}

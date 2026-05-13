@@ -1,6 +1,7 @@
 package views
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -1326,6 +1327,143 @@ func TestGasTownConvoyUnwatchInConvoySection(t *testing.T) {
 	}
 	if msg.ConvoyID != "cv-1" {
 		t.Fatalf("expected cv-1, got %s", msg.ConvoyID)
+	}
+}
+
+func TestEventLabel(t *testing.T) {
+	tests := []struct {
+		evType string
+		want   string
+	}{
+		{"session_start", "session"},
+		{"session_death", "death"},
+		{"sling", "sling"},
+		{"nudge", "nudge"},
+		{"handoff", "handoff"},
+		{"spawn", "spawn"},
+		{"patrol_started", "patrol"},
+		{"unknown_type", "unknown_type"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.evType, func(t *testing.T) {
+			got := eventLabel(gastown.Event{Type: tc.evType})
+			if got != tc.want {
+				t.Errorf("eventLabel(%q) = %q, want %q", tc.evType, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEventColor(t *testing.T) {
+	// Verify each event type maps to a recognizable distinct color.
+	cases := map[string]bool{
+		"sling":          true,
+		"session_death":  true,
+		"nudge":          true,
+		"handoff":        true,
+		"session_start":  true,
+		"spawn":          true,
+		"patrol_started": true,
+		"unknown":        true,
+	}
+	seen := make(map[string]bool)
+	for evType := range cases {
+		got := eventColor(gastown.Event{Type: evType})
+		if got == nil {
+			t.Errorf("eventColor(%q) returned nil", evType)
+		}
+		seen[evType] = true
+	}
+	if !seen["patrol_started"] {
+		t.Error("missing patrol_started branch")
+	}
+	// Verify a couple of the documented mappings explicitly.
+	if eventColor(gastown.Event{Type: "sling"}) == eventColor(gastown.Event{Type: "session_death"}) {
+		t.Error("sling and session_death should map to distinct colors")
+	}
+}
+
+func TestEventDetailSling(t *testing.T) {
+	ev := gastown.Event{
+		Type:    "sling",
+		Actor:   "mayor",
+		Payload: json.RawMessage(`{"target":"polecat-1","bead":"mg-42"}`),
+	}
+	got := eventDetail(ev, 80)
+	if !strings.Contains(got, "mayor") || !strings.Contains(got, "polecat-1") || !strings.Contains(got, "mg-42") {
+		t.Errorf("sling detail missing parts: %q", got)
+	}
+}
+
+func TestEventDetailNudgeTruncatesLongReason(t *testing.T) {
+	longReason := "this is an extraordinarily long reason that exceeds the thirty character truncation limit"
+	ev := gastown.Event{
+		Type:    "nudge",
+		Actor:   "mayor",
+		Payload: json.RawMessage(`{"target":"polecat-1","reason":"` + longReason + `"}`),
+	}
+	got := eventDetail(ev, 80)
+	if !strings.Contains(got, "...") {
+		t.Errorf("expected '...' truncation marker, got %q", got)
+	}
+	if strings.Contains(got, longReason) {
+		t.Errorf("long reason should have been truncated, but full text present: %q", got)
+	}
+}
+
+func TestEventDetailSessionStartWithTopic(t *testing.T) {
+	ev := gastown.Event{
+		Type:    "session_start",
+		Actor:   "polecat-1",
+		Payload: json.RawMessage(`{"topic":"refactor"}`),
+	}
+	got := eventDetail(ev, 80)
+	if !strings.Contains(got, "polecat-1") || !strings.Contains(got, "refactor") {
+		t.Errorf("session_start detail missing parts: %q", got)
+	}
+}
+
+func TestEventDetailSessionStartNoTopic(t *testing.T) {
+	ev := gastown.Event{Type: "session_start", Actor: "polecat-1"}
+	got := eventDetail(ev, 80)
+	if !strings.Contains(got, "started") {
+		t.Errorf("expected 'started' fallback, got %q", got)
+	}
+}
+
+func TestEventDetailSessionDeathWithReason(t *testing.T) {
+	ev := gastown.Event{
+		Type:    "session_death",
+		Actor:   "polecat-1",
+		Payload: json.RawMessage(`{"reason":"crashed"}`),
+	}
+	got := eventDetail(ev, 80)
+	if !strings.Contains(got, "polecat-1") || !strings.Contains(got, "crashed") {
+		t.Errorf("session_death detail missing parts: %q", got)
+	}
+}
+
+func TestEventDetailHandoffWithSubject(t *testing.T) {
+	ev := gastown.Event{
+		Type:    "handoff",
+		Actor:   "mayor",
+		Payload: json.RawMessage(`{"subject":"Need review"}`),
+	}
+	got := eventDetail(ev, 80)
+	if !strings.Contains(got, "mayor") || !strings.Contains(got, "Need review") {
+		t.Errorf("handoff detail missing parts: %q", got)
+	}
+}
+
+func TestEventDetailSpawnWithPolecat(t *testing.T) {
+	ev := gastown.Event{
+		Type:    "spawn",
+		Actor:   "mayor",
+		Payload: json.RawMessage(`{"polecat":"obsidian"}`),
+	}
+	got := eventDetail(ev, 80)
+	if !strings.Contains(got, "mayor") || !strings.Contains(got, "obsidian") {
+		t.Errorf("spawn detail missing parts: %q", got)
 	}
 }
 

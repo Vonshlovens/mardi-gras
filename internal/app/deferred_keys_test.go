@@ -129,6 +129,40 @@ func TestDeferredKeyDropsAfterFilterSuppression(t *testing.T) {
 	}
 }
 
+func TestIsLikelyDeferredFragmentPair(t *testing.T) {
+	tests := []struct {
+		name  string
+		first tea.KeyPressMsg
+		next  tea.KeyPressMsg
+		want  bool
+	}{
+		{"[ + digit is fragment", tea.KeyPressMsg{Code: '[', Text: "["}, tea.KeyPressMsg{Code: '1', Text: "1"}, true},
+		{"[ + shift CSI tail is fragment", tea.KeyPressMsg{Code: '[', Text: "["}, tea.KeyPressMsg{Code: 'A', Text: "A", Mod: tea.ModShift}, true},
+		{"[ + non-digit non-CSI is not fragment", tea.KeyPressMsg{Code: '[', Text: "["}, tea.KeyPressMsg{Code: 'q', Text: "q"}, false},
+		{"] + digit is fragment", tea.KeyPressMsg{Code: ']', Text: "]"}, tea.KeyPressMsg{Code: '5', Text: "5"}, true},
+		{"] + letter is not fragment", tea.KeyPressMsg{Code: ']', Text: "]"}, tea.KeyPressMsg{Code: 'a', Text: "a"}, false},
+		{"digit + ; is fragment", tea.KeyPressMsg{Code: '7', Text: "7"}, tea.KeyPressMsg{Code: ';', Text: ";"}, true},
+		{"digit + non-semicolon is not", tea.KeyPressMsg{Code: '7', Text: "7"}, tea.KeyPressMsg{Code: '0', Text: "0"}, false},
+		{"; + r is fragment", tea.KeyPressMsg{Code: ';', Text: ";"}, tea.KeyPressMsg{Code: 'r', Text: "r"}, true},
+		{"; + g is fragment", tea.KeyPressMsg{Code: ';', Text: ";"}, tea.KeyPressMsg{Code: 'g', Text: "g"}, true},
+		{"; + other is not", tea.KeyPressMsg{Code: ';', Text: ";"}, tea.KeyPressMsg{Code: 'x', Text: "x"}, false},
+		{"default case (letter + letter)", tea.KeyPressMsg{Code: 'q', Text: "q"}, tea.KeyPressMsg{Code: 'q', Text: "q"}, false},
+		{"non-printable first rejects", tea.KeyPressMsg{Code: 0x01}, tea.KeyPressMsg{Code: '1', Text: "1"}, false},
+		{"non-printable second rejects", tea.KeyPressMsg{Code: '[', Text: "["}, tea.KeyPressMsg{Code: 0x01}, false},
+		{"ModCtrl on first rejects fragment", tea.KeyPressMsg{Code: '[', Text: "[", Mod: tea.ModCtrl}, tea.KeyPressMsg{Code: '1', Text: "1"}, false},
+		{"ModCtrl on second rejects fragment", tea.KeyPressMsg{Code: '[', Text: "["}, tea.KeyPressMsg{Code: '1', Text: "1", Mod: tea.ModCtrl}, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isLikelyDeferredFragmentPair(tc.first, tc.next)
+			if got != tc.want {
+				t.Errorf("isLikelyDeferredFragmentPair(%v, %v) = %v, want %v", tc.first, tc.next, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDeferredQuickActionDigitWaitsForTimer(t *testing.T) {
 	m, filter := setupDeferredKeyModel(t)
 
