@@ -126,7 +126,11 @@ func main() {
 	guard := app.NewOSCGuard()
 	model := app.NewWithGuard(issues, source, blockingTypes, guard, *noAnimations, filters)
 	p := tea.NewProgram(model, tea.WithFilter(guard.Filter()))
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if final, ok := finalModel.(app.Model); ok {
+		final.Cleanup()
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

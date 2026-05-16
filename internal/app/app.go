@@ -147,6 +147,11 @@ type Model struct {
 	showDoctor bool
 	doctor     views.Doctor
 
+	// Codex MCP transcript overlay + per-issue session registry
+	showCodex       bool
+	codexTranscript views.CodexTranscript
+	codexSessions   map[string]*codexSession
+
 	// Recovery confirmation dialog
 	recovering     bool
 	recoveryDialog components.RecoveryDialog
@@ -280,6 +285,7 @@ func NewWithGuard(issues []data.Issue, source data.Source, blockingTypes map[str
 		startedAt:      time.Now(),
 		oscGuard:       guard,
 		noAnimations:   noAnimations,
+		codexSessions:  make(map[string]*codexSession),
 	}
 }
 
@@ -1074,6 +1080,67 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toast = toast
 		return m, cmd
 
+	case codexLaunchedMsg:
+		m.codexSessions[msg.issueID] = msg.sess
+		if m.showCodex && m.parade.SelectedIssue != nil && m.parade.SelectedIssue.ID == msg.issueID {
+			m.codexTranscript.SetState(msg.sess.state)
+		}
+		toast, cmd := components.ShowToast(
+			fmt.Sprintf("Codex (MCP) launched for %s", msg.issueID),
+			components.ToastSuccess, toastDuration,
+		)
+		m.toast = toast
+		return m, tea.Batch(cmd, codexNextEventCmd(msg.issueID, msg.sess.handle.Session()))
+
+	case codexLaunchErrorMsg:
+		toast, cmd := components.ShowToast(
+			fmt.Sprintf("Codex MCP launch failed: %s", msg.err),
+			components.ToastError, toastDuration,
+		)
+		m.toast = toast
+		return m, cmd
+
+	case codexEventMsg:
+		sess := m.codexSessions[msg.issueID]
+		if sess == nil {
+			return m, nil
+		}
+		if msg.done {
+			// Event stream closed; the Done channel will deliver the terminal
+			// result via codexDoneMsg. Just stop polling for events.
+			return m, nil
+		}
+		applyCodexEvent(sess, msg.ev)
+		if m.showCodex && m.parade.SelectedIssue != nil && m.parade.SelectedIssue.ID == msg.issueID {
+			m.codexTranscript.SetState(sess.state)
+		}
+		if sess.handle == nil {
+			return m, nil
+		}
+		return m, codexNextEventCmd(msg.issueID, sess.handle.Session())
+
+	case codexDoneMsg:
+		sess := m.codexSessions[msg.issueID]
+		if sess == nil {
+			return m, nil
+		}
+		finalizeCodexSession(sess, msg.result)
+		if m.showCodex && m.parade.SelectedIssue != nil && m.parade.SelectedIssue.ID == msg.issueID {
+			m.codexTranscript.SetState(sess.state)
+		}
+		var msgText string
+		var kind components.ToastLevel
+		if msg.result.Err != nil {
+			msgText = fmt.Sprintf("Codex MCP errored for %s", msg.issueID)
+			kind = components.ToastError
+		} else {
+			msgText = fmt.Sprintf("Codex MCP done for %s", msg.issueID)
+			kind = components.ToastSuccess
+		}
+		toast, cmd := components.ShowToast(msgText, kind, toastDuration)
+		m.toast = toast
+		return m, cmd
+
 	case agentStatusMsg:
 		m.activeAgents = msg.activeAgents
 		m.propagateAgentState()
@@ -1714,6 +1781,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.showGasTown = !m.showGasTown
 		if m.showGasTown {
 			m.showDoctor = false
+			m.showCodex = false
 			cmd := m.activateGasTown()
 			return m, cmd
 		}
@@ -1727,6 +1795,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.showProblems {
 			m.showGasTown = false
 			m.showDoctor = false
+			m.showCodex = false
 			m.problems.SetProblems(m.allProblems())
 		}
 		return m, nil
@@ -1736,6 +1805,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.showDoctor {
 			m.showGasTown = false
 			m.showProblems = false
+			m.showCodex = false
 			// Set existing result if available, then refresh
 			if m.doctorResult != nil {
 				m.doctor.SetResult(m.doctorResult)
@@ -1743,6 +1813,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, fetchDoctorDiagnostics
 		}
 		return m, nil
+
+	case "M":
+		return m.toggleCodexTranscript()
 
 	case "c":
 		m.parade.ToggleClosed()
@@ -2867,6 +2940,7 @@ func (m *Model) layout() {
 	m.gasTown.SetSize(detailW, bodyH)
 	m.problems.SetSize(detailW, bodyH)
 	m.doctor.SetSize(detailW, bodyH)
+	m.codexTranscript.SetSize(detailW, bodyH)
 	m.detail.AllIssues = m.issues
 	detailIssueMap := data.BuildIssueMap(m.issues)
 	m.detail.IssueMap = detailIssueMap
@@ -3280,6 +3354,8 @@ func (m Model) View() tea.View {
 	} else {
 		var rightPanel string
 		switch {
+		case m.showCodex:
+			rightPanel = m.codexTranscript.View()
 		case m.showDoctor:
 			rightPanel = m.doctor.View()
 		case m.showProblems && m.gtEnv.Available:
