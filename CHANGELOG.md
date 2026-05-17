@@ -2,10 +2,15 @@
 
 All notable changes to Mardi Gras are documented here. For full release details including binaries and install instructions, see the [Releases](https://github.com/quietpublish/mardi-gras/releases) page.
 
-## Unreleased
+## v0.22.0 (2026-05-17)
+
+The replies release. Codex MCP sessions are no longer one-shot — press `r` in the transcript overlay to continue the conversation against the same `threadId` without spawning a fresh subprocess.
 
 ### Added
-- **Codex MCP follow-up replies (Phase 2)** — the transcript overlay is no longer one-shot. Press `r` while the overlay is open and the prior turn has terminated to send a follow-up prompt against the existing codex conversation via the `codex-reply` tool. The codex subprocess is reused, so replies are near-instant: in the real-codex integration test, the first turn took 38.4s (cold sub-MCP startup) and the reply turn took **2.0s** — a 19× speedup. The transcript naturally interleaves both sides of the conversation via the existing `user_message`/`agent_message` rendering. The reply input lives in the bottom bar (same pattern as `mailReplyInput`); `enter` submits, `esc` cancels. Gated on `Status != "running"` and a non-empty `ThreadID`; mid-turn replies surface a toast rather than racing the prior `tools/call`. Implements [#47](https://github.com/quietpublish/mardi-gras/issues/47). Phase 3 (approval routing) and Phase 4 (mg-restart resume) carved off into [#48](https://github.com/quietpublish/mardi-gras/issues/48) and [#49](https://github.com/quietpublish/mardi-gras/issues/49).
+- **Codex MCP follow-up replies (Phase 2 of [#40](https://github.com/quietpublish/mardi-gras/issues/40))** — the transcript overlay is no longer one-shot. Press `r` while the overlay is open and the prior turn has terminated to send a follow-up prompt against the existing codex conversation via the `codex-reply` tool. The codex subprocess is reused, so replies are near-instant: in the real-codex integration test the first turn took 26–38s (cold sub-MCP startup) and the reply turn took **1.6–2.0s** — a 13–24× speedup. The transcript naturally interleaves both sides of the conversation via the existing `user_message`/`agent_message` rendering. The reply input lives in the bottom bar (same pattern as `mailReplyInput`); `enter` submits, `esc` cancels. Gated on `Status != "running"` and a non-empty `ThreadID`; mid-turn replies surface a toast rather than racing the prior `tools/call`. Implements [#47](https://github.com/quietpublish/mardi-gras/issues/47) ([#50](https://github.com/quietpublish/mardi-gras/pull/50)). Phase 3 (approval routing) and Phase 4 (mg-restart resume) carved off into [#48](https://github.com/quietpublish/mardi-gras/issues/48) and [#49](https://github.com/quietpublish/mardi-gras/issues/49).
+
+### Fixed
+- **Reply path repeats the v0.21.0 launch-ctx bug** — caught during the [#50](https://github.com/quietpublish/mardi-gras/pull/50) `/simplify` review. `codexReplyCmd`'s 30s ctx timeout propagated into `awaitResponse` and killed the reply session the instant the dispatch goroutine returned. `CodexMCPHandle.Reply` now uses `context.Background()` for `StartReplySession`, mirroring `LaunchCodexMCP`'s detachment. Regression locked in via `TestReplyCtxDoesNotKillSession`. The integration test passed before the fix only because it bypassed `codexReplyCmd` and called `Reply(context.Background(), ...)` directly.
 
 ## v0.21.1 (2026-05-16)
 
