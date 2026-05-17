@@ -168,37 +168,61 @@ func (s *Session) closeEvents() {
 }
 
 // demuxEvents forwards events whose requestId matches this session. It exits
-// when the client's events channel closes or stop is signaled.
+// when the client's events channel closes or stop is signaled — but before
+// honoring stop it drains any events already buffered in the client channel,
+// so events that arrived just before the tool response (a normal sequence:
+// codex emits agent_message then the tools/call result) are not lost when
+// awaitResponse's defer signals stop.
 func (s *Session) demuxEvents() {
 	defer s.closeEvents()
 	for {
 		select {
-		case <-s.stop:
-			return
 		case ev, ok := <-s.client.Events():
 			if !ok {
 				return
 			}
-			if ev.Meta.RequestID != s.reqID {
-				continue
-			}
-			s.setThreadID(ev.Meta.ThreadID)
-			select {
-			case <-s.stop:
+			s.forward(ev)
+		case <-s.stop:
+			s.drainAndExit()
+			return
+		}
+	}
+}
+
+// drainAndExit non-blockingly reads remaining events from the client and
+// forwards them, then returns. Caller is responsible for the closeEvents
+// defer.
+func (s *Session) drainAndExit() {
+	for {
+		select {
+		case ev, ok := <-s.client.Events():
+			if !ok {
 				return
-			case s.events <- ev:
-			default:
-				// Buffer full — drop oldest to keep latest.
-				select {
-				case <-s.events:
-				default:
-				}
-				select {
-				case s.events <- ev:
-				case <-s.stop:
-					return
-				}
 			}
+			s.forward(ev)
+		default:
+			return
+		}
+	}
+}
+
+// forward filters an event by requestID and pushes it to s.events with
+// drop-oldest behavior on buffer pressure.
+func (s *Session) forward(ev CodexEvent) {
+	if ev.Meta.RequestID != s.reqID {
+		return
+	}
+	s.setThreadID(ev.Meta.ThreadID)
+	select {
+	case s.events <- ev:
+	default:
+		select {
+		case <-s.events:
+		default:
+		}
+		select {
+		case s.events <- ev:
+		default:
 		}
 	}
 }

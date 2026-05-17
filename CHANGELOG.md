@@ -2,10 +2,12 @@
 
 All notable changes to Mardi Gras are documented here. For full release details including binaries and install instructions, see the [Releases](https://github.com/quietpublish/mardi-gras/releases) page.
 
-## Unreleased
+## v0.21.0 (2026-05-16)
+
+The MCP release. Adds first-class Model Context Protocol support so mg can speak directly to `codex mcp-server`, surfacing live agent state in the TUI instead of black-boxing a tmux pane.
 
 ### Added
-- **Codex MCP integration (Phase 1)** — mg now speaks the Model Context Protocol over stdio to `codex mcp-server`, letting it surface live agent state inside the TUI rather than black-boxing a tmux pane. Press `M` on a selected issue to spawn a codex session via MCP and open a live transcript overlay that renders `agent_message`, `exec_command_*`, `mcp_tool_call_*`, `task_started/complete`, and `error` events as they arrive. The tmux dispatch path (`a`) is unchanged. New `internal/codexmcp` package implements a focused JSON-RPC client + typed event envelopes + session wrapper (race-tested, integration-tested against real codex 0.130.0). Subprocess lifecycle: codex is spawned via stdio pipes, terminated cleanly on app quit via `Model.Cleanup()`. Deferred to follow-ups: interactive replies on a running session, exec/patch approval routing, resume-on-restart. ([#40](https://github.com/quietpublish/mardi-gras/issues/40))
+- **Codex MCP integration (Phase 1)** — mg now speaks the Model Context Protocol over stdio to `codex mcp-server`, letting it surface live agent state inside the TUI rather than black-boxing a tmux pane. Press `M` on a selected issue to spawn a codex session via MCP and open a live transcript overlay that renders `agent_message`, `exec_command_*`, `mcp_tool_call_*`, `task_started/complete`, and `error` events as they arrive. The tmux dispatch path (`a`) is unchanged. New `internal/codexmcp` package implements a focused JSON-RPC client + typed event envelopes + session wrapper (race-tested, integration-tested against real codex 0.130.0). Subprocess lifecycle: codex is spawned via stdio pipes, terminated cleanly on app quit via `Model.Cleanup()`. Deferred to follow-ups: interactive replies on a running session, exec/patch approval routing, resume-on-restart. ([#40](https://github.com/quietpublish/mardi-gras/issues/40) / [#43](https://github.com/quietpublish/mardi-gras/pull/43))
 
 ## v0.20.0 (2026-05-13)
 
