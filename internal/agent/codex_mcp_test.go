@@ -59,17 +59,16 @@ func newFakePipe(t *testing.T) (codexmcp.Transport, *codexmcp.SubprocessTranspor
 	return transport, nil, fs
 }
 
-func (f *fakeMCPServer) run(t *testing.T, sr, sw io.Closer) {
-	t.Helper()
-	defer func() {
-		_ = sr.Close()
-		_ = sw.Close()
-		close(f.closed)
-	}()
-	// initialize
+// runHandshake processes the MCP initialize request and the
+// notifications/initialized notification, leaving the server ready to
+// accept tools/call requests. Returns false if the handshake stream is
+// interrupted (closed pipe). Used by both the canned bridge harness
+// (`run`) and tests that need to drive their own custom tools/call flow
+// after the handshake.
+func (f *fakeMCPServer) runHandshake() bool {
 	var init map[string]any
 	if err := f.dec.Decode(&init); err != nil {
-		return
+		return false
 	}
 	id, _ := init["id"].(float64)
 	f.respond(int(id), map[string]any{
@@ -77,9 +76,18 @@ func (f *fakeMCPServer) run(t *testing.T, sr, sw io.Closer) {
 		"capabilities":    map[string]any{"tools": map[string]any{"listChanged": true}},
 		"serverInfo":      map[string]any{"name": "fake", "version": "0.1"},
 	})
-	// notifications/initialized
 	var n map[string]any
-	if err := f.dec.Decode(&n); err != nil {
+	return f.dec.Decode(&n) == nil
+}
+
+func (f *fakeMCPServer) run(t *testing.T, sr, sw io.Closer) {
+	t.Helper()
+	defer func() {
+		_ = sr.Close()
+		_ = sw.Close()
+		close(f.closed)
+	}()
+	if !f.runHandshake() {
 		return
 	}
 	// tools/call
@@ -230,6 +238,263 @@ func TestLaunchCtxDoesNotKillSession(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Done not delivered")
+	}
+}
+
+func TestReplyRotatesSession(t *testing.T) {
+	// Build a fake-MCP transport that:
+	//   1. Auto-responds to initialize
+	//   2. Handles the first tools/call (codex) with a session_configured
+	//      event so the session captures a threadID, then resolves it.
+	//   3. Handles the second tools/call (codex-reply) by echoing the
+	//      threadId arg back as an agent_message and resolving.
+	// Drives Reply and asserts the rotated session yields the expected
+	// agent_message.
+	cr, sw := io.Pipe()
+	sr, cw := io.Pipe()
+	transport := &pipeTransport{clientRead: cr, clientWrite: cw}
+
+	fs := &fakeMCPServer{
+		dec:    json.NewDecoder(bufio.NewReader(sr)),
+		enc:    json.NewEncoder(sw),
+		closed: make(chan struct{}),
+	}
+
+	go func() {
+		defer func() {
+			_ = sr.Close()
+			_ = sw.Close()
+			close(fs.closed)
+		}()
+		if !fs.runHandshake() {
+			return
+		}
+		// First tools/call (codex)
+		var call1 map[string]any
+		if err := fs.dec.Decode(&call1); err != nil {
+			return
+		}
+		id1, _ := call1["id"].(float64)
+		// Emit session_configured so the session captures the threadId.
+		fs.notify("codex/event", map[string]any{
+			"_meta": map[string]any{"requestId": int(id1), "threadId": "thr-rot"},
+			"id":    "1",
+			"msg":   map[string]any{"type": "session_configured", "thread_id": "thr-rot", "model": "gpt-5-mini"},
+		})
+		fs.respond(int(id1), map[string]any{
+			"structuredContent": map[string]any{"threadId": "thr-rot", "content": "initial"},
+		})
+		// Second tools/call (codex-reply)
+		var call2 map[string]any
+		if err := fs.dec.Decode(&call2); err != nil {
+			return
+		}
+		id2, _ := call2["id"].(float64)
+		params := call2["params"].(map[string]any)
+		args := params["arguments"].(map[string]any)
+		thread := args["threadId"].(string)
+		fs.notify("codex/event", map[string]any{
+			"_meta": map[string]any{"requestId": int(id2), "threadId": thread},
+			"id":    "2",
+			"msg":   map[string]any{"type": "agent_message", "message": "reply for " + thread},
+		})
+		fs.respond(int(id2), map[string]any{
+			"structuredContent": map[string]any{"threadId": thread, "content": "reply-done"},
+		})
+		// Keep draining.
+		for {
+			var m map[string]any
+			if err := fs.dec.Decode(&m); err != nil {
+				return
+			}
+		}
+	}()
+
+	prev := codexTransportFactory
+	codexTransportFactory = func(opts LaunchCodexMCPOptions) (codexmcp.Transport, *codexmcp.SubprocessTransport, error) {
+		return transport, nil, nil
+	}
+	t.Cleanup(func() { codexTransportFactory = prev })
+
+	h, err := LaunchCodexMCP(context.Background(), LaunchCodexMCPOptions{Prompt: "initial"})
+	if err != nil {
+		t.Fatalf("LaunchCodexMCP: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	// Drain the first session to terminal Done so ThreadID is populated.
+	origSession := h.Session()
+	for {
+		select {
+		case ev, ok := <-origSession.Events():
+			if !ok {
+				goto firstDone
+			}
+			_ = ev
+		case res := <-origSession.Done():
+			if res.Err != nil {
+				t.Fatalf("first session.Err: %v", res.Err)
+			}
+			goto firstDone
+		case <-time.After(2 * time.Second):
+			t.Fatal("first session never finished")
+		}
+	}
+firstDone:
+	if got := h.Session().ThreadID(); got != "thr-rot" {
+		t.Fatalf("threadID = %q after first session", got)
+	}
+
+	replySess, err := h.Reply(context.Background(), "follow up")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if h.Session() != replySess {
+		t.Fatal("Reply did not rotate handle.session")
+	}
+	if h.Session() == origSession {
+		t.Fatal("Reply returned the same session as the original")
+	}
+
+	// The new session should yield the agent_message event echoed back.
+	select {
+	case ev, ok := <-replySess.Events():
+		if !ok {
+			t.Fatal("reply events closed")
+		}
+		if ev.EventType() != "agent_message" {
+			t.Fatalf("event type = %q", ev.EventType())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no reply event")
+	}
+	res := <-replySess.Done()
+	if res.Err != nil {
+		t.Fatalf("reply Done.Err: %v", res.Err)
+	}
+}
+
+// TestReplyCtxDoesNotKillSession asserts the reply session outlives the
+// caller's ctx — the same trap that v0.21.1 fixed on the launch path.
+// Without this guarantee, mg's codexReplyCmd defer-cancel would race
+// awaitResponse's <-ctx.Done() arm and push a context.Canceled result onto
+// Done before any reply event is rendered.
+func TestReplyCtxDoesNotKillSession(t *testing.T) {
+	cr, sw := io.Pipe()
+	sr, cw := io.Pipe()
+	transport := &pipeTransport{clientRead: cr, clientWrite: cw}
+
+	fs := &fakeMCPServer{
+		dec:    json.NewDecoder(bufio.NewReader(sr)),
+		enc:    json.NewEncoder(sw),
+		closed: make(chan struct{}),
+	}
+
+	go func() {
+		defer func() {
+			_ = sr.Close()
+			_ = sw.Close()
+			close(fs.closed)
+		}()
+		fs.runHandshake()
+		// First tools/call: emit a session_configured to seed threadID,
+		// then resolve.
+		var call1 map[string]any
+		if err := fs.dec.Decode(&call1); err != nil {
+			return
+		}
+		id1, _ := call1["id"].(float64)
+		fs.notify("codex/event", map[string]any{
+			"_meta": map[string]any{"requestId": int(id1), "threadId": "thr-rctx"},
+			"id":    "1",
+			"msg":   map[string]any{"type": "session_configured", "thread_id": "thr-rctx"},
+		})
+		fs.respond(int(id1), map[string]any{
+			"structuredContent": map[string]any{"threadId": "thr-rctx", "content": "ok"},
+		})
+		// Second tools/call (codex-reply): emit one event AFTER the
+		// expected cancel point, then resolve.
+		var call2 map[string]any
+		if err := fs.dec.Decode(&call2); err != nil {
+			return
+		}
+		id2, _ := call2["id"].(float64)
+		time.Sleep(50 * time.Millisecond) // give the test goroutine time to defer-cancel its ctx
+		fs.notify("codex/event", map[string]any{
+			"_meta": map[string]any{"requestId": int(id2), "threadId": "thr-rctx"},
+			"id":    "2",
+			"msg":   map[string]any{"type": "agent_message", "message": "reply survived"},
+		})
+		fs.respond(int(id2), map[string]any{
+			"structuredContent": map[string]any{"threadId": "thr-rctx", "content": "done"},
+		})
+		for {
+			var m map[string]any
+			if err := fs.dec.Decode(&m); err != nil {
+				return
+			}
+		}
+	}()
+
+	prev := codexTransportFactory
+	codexTransportFactory = func(opts LaunchCodexMCPOptions) (codexmcp.Transport, *codexmcp.SubprocessTransport, error) {
+		return transport, nil, nil
+	}
+	t.Cleanup(func() { codexTransportFactory = prev })
+
+	h, err := LaunchCodexMCP(context.Background(), LaunchCodexMCPOptions{Prompt: "initial"})
+	if err != nil {
+		t.Fatalf("LaunchCodexMCP: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	// Drain the first session to terminal Done so ThreadID is populated.
+	orig := h.Session()
+	for {
+		select {
+		case _, ok := <-orig.Events():
+			if !ok {
+				goto firstDone
+			}
+		case res := <-orig.Done():
+			if res.Err != nil {
+				t.Fatalf("first session.Err: %v", res.Err)
+			}
+			goto firstDone
+		case <-time.After(2 * time.Second):
+			t.Fatal("first session never finished")
+		}
+	}
+firstDone:
+	if h.Session().ThreadID() != "thr-rctx" {
+		t.Fatal("threadID not populated")
+	}
+
+	// Call Reply with a short-lived ctx; cancel immediately to simulate
+	// the codexReplyCmd defer-cancel that would kill the session before
+	// the fix.
+	replyCtx, cancel := context.WithCancel(context.Background())
+	replySess, err := h.Reply(replyCtx, "follow up")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	cancel()
+
+	select {
+	case ev, ok := <-replySess.Events():
+		if !ok {
+			t.Fatal("reply events closed before event arrived — Reply still wired ctx to session")
+		}
+		if ev.EventType() != "agent_message" {
+			t.Fatalf("unexpected event type %q", ev.EventType())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no reply event within 3s — Reply ctx leaked into session")
+	}
+
+	res := <-replySess.Done()
+	if res.Err != nil {
+		t.Fatalf("reply Done.Err: %v", res.Err)
 	}
 }
 
