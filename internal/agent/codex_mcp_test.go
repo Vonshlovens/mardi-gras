@@ -139,7 +139,10 @@ func TestLaunchCodexMCPBridgesEventsAndDone(t *testing.T) {
 	t.Cleanup(func() { _ = h.Close() })
 
 	select {
-	case ev := <-h.Session().Events():
+	case ev, ok := <-h.Session().Events():
+		if !ok {
+			t.Fatal("events channel closed before agent_message arrived")
+		}
 		if ev.EventType() != "agent_message" {
 			t.Fatalf("unexpected event type %q", ev.EventType())
 		}

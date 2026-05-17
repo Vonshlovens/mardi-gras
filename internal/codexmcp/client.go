@@ -132,17 +132,15 @@ func (c *Client) ReadError() error {
 }
 
 // Close shuts the client and transport down. Safe to call multiple times.
-// In-flight Call goroutines will receive context.Canceled on the next read.
+// In-flight Call goroutines unblock via the c.done channel, which is closed
+// by readLoop when the transport reports EOF (which Close triggers by
+// closing stdin). We deliberately do NOT close pending response channels —
+// doing so would race with readLoop dispatching a response that was just
+// LoadAndDelete'd from the pending map, causing a send-on-closed-channel
+// panic.
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
 		c.closeErr = c.t.Close()
-		// Wake any in-flight callers.
-		c.pending.Range(func(_, v any) bool {
-			if ch, ok := v.(chan response); ok {
-				close(ch)
-			}
-			return true
-		})
 	})
 	return c.closeErr
 }
