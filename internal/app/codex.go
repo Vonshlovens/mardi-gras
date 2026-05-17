@@ -39,9 +39,6 @@ type codexLaunchErrorMsg struct {
 type codexEventMsg struct {
 	issueID string
 	ev      codexmcp.CodexEvent
-	// done is true when the underlying events channel closed and no further
-	// events will arrive; the handler should transition to terminal state.
-	done bool
 }
 
 // codexDoneMsg carries the terminal SessionResult.
@@ -50,17 +47,21 @@ type codexDoneMsg struct {
 	result  codexmcp.SessionResult
 }
 
-// codexNextEventCmd returns a tea.Cmd that reads the next event (or done)
-// from the session and dispatches the appropriate message.
+// codexNextEventCmd returns a tea.Cmd that reads the next event or terminal
+// result from the session.
 //
-// The reader returns codexEventMsg{done:true} when the events channel closes
-// before any event arrives — that's the signal to wait for Done().
+// Why the closed-Events branch falls through to Done: at session termination
+// both channels become ready (awaitResponse pushes the result then signalStop
+// closes events). Go picks pseudo-randomly; if the closed-events branch wins,
+// we must still surface the terminal result instead of returning a sentinel
+// the handler would have to interpret.
 func codexNextEventCmd(issueID string, sess *codexmcp.Session) tea.Cmd {
 	return func() tea.Msg {
 		select {
 		case ev, ok := <-sess.Events():
 			if !ok {
-				return codexEventMsg{issueID: issueID, done: true}
+				res := <-sess.Done()
+				return codexDoneMsg{issueID: issueID, result: res}
 			}
 			return codexEventMsg{issueID: issueID, ev: ev}
 		case res := <-sess.Done():
@@ -114,11 +115,12 @@ func finalizeCodexSession(sess *codexSession, res codexmcp.SessionResult) {
 	if sess == nil || sess.state == nil {
 		return
 	}
-	sess.state.EndAt = time.Now()
+	now := time.Now()
+	sess.state.EndAt = now
 	if res.Err != nil {
 		sess.state.Status = "errored"
-		sess.state.Entries = append(sess.state.Entries, views.CodexTranscriptEntry{
-			At:    time.Now(),
+		sess.state.AppendEntry(views.CodexTranscriptEntry{
+			At:    now,
 			Kind:  "agent",
 			Title: "session error: " + res.Err.Error(),
 			Error: true,
@@ -127,8 +129,8 @@ func finalizeCodexSession(sess *codexSession, res codexmcp.SessionResult) {
 	}
 	sess.state.Status = "done"
 	if res.Content != "" {
-		sess.state.Entries = append(sess.state.Entries, views.CodexTranscriptEntry{
-			At:    time.Now(),
+		sess.state.AppendEntry(views.CodexTranscriptEntry{
+			At:    now,
 			Kind:  "agent",
 			Title: "final",
 			Body:  res.Content,

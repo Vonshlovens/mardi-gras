@@ -126,7 +126,10 @@ func LaunchCodexMCP(ctx context.Context, opts LaunchCodexMCPOptions) (*CodexMCPH
 		approval = "never"
 	}
 
-	session, err := client.StartSession(ctx, codexmcp.SessionOptions{
+	// Detach the session from the caller's ctx. mg's launch path defer-cancels
+	// the launch ctx once LaunchCodexMCP returns, which would kill the
+	// session before any event flows. Cancellation is via CodexMCPHandle.Close.
+	session, err := client.StartSession(context.Background(), codexmcp.SessionOptions{
 		Prompt:         opts.Prompt,
 		Cwd:            opts.ProjectDir,
 		Sandbox:        sandbox,
