@@ -41,6 +41,8 @@ type Client struct {
 	eventsCh     chan CodexEvent
 	eventsClosed atomic.Bool
 
+	serverReqCh chan ServerRequest
+
 	closeOnce sync.Once
 	closeErr  error
 	done      chan struct{}
@@ -86,11 +88,12 @@ func Dial(ctx context.Context, t Transport, opts ...ClientOption) (*Client, erro
 	}
 
 	c := &Client{
-		t:        t,
-		dec:      json.NewDecoder(bufio.NewReader(t.Reader())),
-		w:        t.Writer(),
-		eventsCh: make(chan CodexEvent, o.eventBuffer),
-		done:     make(chan struct{}),
+		t:           t,
+		dec:         json.NewDecoder(bufio.NewReader(t.Reader())),
+		w:           t.Writer(),
+		eventsCh:    make(chan CodexEvent, o.eventBuffer),
+		serverReqCh: make(chan ServerRequest, 16),
+		done:        make(chan struct{}),
 	}
 	c.enc = json.NewEncoder(c.w)
 
@@ -112,6 +115,14 @@ func Dial(ctx context.Context, t Transport, opts ...ClientOption) (*Client, erro
 // risk the reader goroutine blocking; the buffer is sized via WithEventBuffer.
 func (c *Client) Events() <-chan CodexEvent {
 	return c.eventsCh
+}
+
+// ServerRequests returns a receive channel of server-initiated JSON-RPC requests
+// (e.g. codex's `elicitation/create` approval prompts). The channel is closed when
+// the client shuts down. Each request must be answered with Respond/RespondError
+// using its RawID, or the agent loop that issued it will stall.
+func (c *Client) ServerRequests() <-chan ServerRequest {
+	return c.serverReqCh
 }
 
 // Done returns a channel that is closed when the underlying transport hits
@@ -200,10 +211,37 @@ func (c *Client) notify(method string, params any) error {
 	return c.writeJSON(n)
 }
 
+// Respond answers a server-initiated request (ServerRequest) with a result. The
+// rawID must be the ServerRequest.RawID, echoed back verbatim so the server can
+// match the reply to its outstanding request.
+func (c *Client) Respond(rawID json.RawMessage, result any) error {
+	raw, err := marshalParams(result)
+	if err != nil {
+		return fmt.Errorf("marshal result: %w", err)
+	}
+	return c.writeJSON(response{
+		JSONRPC: jsonRPCVersion,
+		ID:      rawID,
+		Result:  raw,
+	})
+}
+
+// RespondError answers a server-initiated request with a JSON-RPC error object.
+func (c *Client) RespondError(rawID json.RawMessage, code int, message string) error {
+	return c.writeJSON(response{
+		JSONRPC: jsonRPCVersion,
+		ID:      rawID,
+		Error:   &rpcError{Code: code, Message: message},
+	})
+}
+
 func (c *Client) initialize(ctx context.Context, version string) error {
 	params := initializeParams{
 		ProtocolVersion: mcpProtocolVersion,
-		Capabilities:    map[string]any{},
+		// Advertise the elicitation capability so the server is free to send
+		// `elicitation/create` approval requests (MCP spec). Codex ships these
+		// regardless today, but this keeps mg spec-conformant and forward-compatible.
+		Capabilities: map[string]any{"elicitation": map[string]any{}},
 		ClientInfo: clientInfo{
 			Name:    clientName,
 			Version: version,
@@ -236,13 +274,18 @@ func marshalParams(params any) (json.RawMessage, error) {
 	return b, nil
 }
 
-// readLoop dispatches inbound JSON-RPC messages. Responses (id != null) are
-// routed to the matching pending channel; notifications named codex/event are
-// decoded and forwarded on eventsCh. Unknown notifications are dropped.
+// readLoop dispatches inbound JSON-RPC messages:
+//   - request (id + method, e.g. elicitation/create) → server-initiated request,
+//     forwarded on serverReqCh.
+//   - response (id, no method) → routed to the matching pending channel.
+//   - notification named codex/event → decoded and forwarded on eventsCh.
+//
+// Unknown notifications are dropped.
 func (c *Client) readLoop() {
 	defer func() {
 		if !c.eventsClosed.Swap(true) {
 			close(c.eventsCh)
+			close(c.serverReqCh)
 		}
 		close(c.done)
 	}()
@@ -256,8 +299,20 @@ func (c *Client) readLoop() {
 			return
 		}
 		switch {
-		case msg.ID != nil:
-			if v, ok := c.pending.LoadAndDelete(*msg.ID); ok {
+		case msg.Method != "" && len(msg.ID) > 0:
+			// Server-initiated request. Best-effort, non-blocking send: approval
+			// prompts don't pile up, and we must never block the read loop (which
+			// also feeds in-flight Call responses).
+			select {
+			case c.serverReqCh <- ServerRequest{RawID: msg.ID, Method: msg.Method, Params: msg.Params}:
+			default:
+			}
+		case len(msg.ID) > 0:
+			id, ok := parseIntID(msg.ID)
+			if !ok {
+				continue
+			}
+			if v, ok := c.pending.LoadAndDelete(id); ok {
 				if ch, ok := v.(chan response); ok {
 					ch <- msg
 				}

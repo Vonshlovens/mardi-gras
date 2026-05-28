@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"charm.land/bubbles/v2/textinput"
@@ -55,6 +56,23 @@ type codexReplyDispatchedMsg struct {
 	sess    *codexmcp.Session
 }
 
+// codexApprovalRequestMsg lands when codex sends a server-initiated approval
+// request (exec or patch). ok is false when the request isn't a supported
+// exec/patch approval, in which case the handler auto-denies.
+type codexApprovalRequestMsg struct {
+	issueID  string
+	req      codexmcp.ServerRequest
+	approval codexmcp.ElicitApproval
+	ok       bool
+}
+
+// codexApprovalResolvedMsg lands after mg has written an approval response back
+// to codex (or failed to).
+type codexApprovalResolvedMsg struct {
+	issueID string
+	err     error
+}
+
 type codexReplyErrorMsg struct {
 	issueID string
 	err     error
@@ -68,7 +86,7 @@ type codexReplyErrorMsg struct {
 // closes events). Go picks pseudo-randomly; if the closed-events branch wins,
 // we must still surface the terminal result instead of returning a sentinel
 // the handler would have to interpret.
-func codexNextEventCmd(issueID string, sess *codexmcp.Session) tea.Cmd {
+func codexNextEventCmd(issueID string, sess *codexmcp.Session, serverReqCh <-chan codexmcp.ServerRequest) tea.Cmd {
 	return func() tea.Msg {
 		select {
 		case ev, ok := <-sess.Events():
@@ -77,10 +95,113 @@ func codexNextEventCmd(issueID string, sess *codexmcp.Session) tea.Cmd {
 				return codexDoneMsg{issueID: issueID, result: res}
 			}
 			return codexEventMsg{issueID: issueID, ev: ev}
+		case req, ok := <-serverReqCh:
+			if !ok {
+				// Client shut down — serverReqCh closes with the transport, at
+				// which point the session is terminating and Done() has a result.
+				res := <-sess.Done()
+				return codexDoneMsg{issueID: issueID, result: res}
+			}
+			approval, valid := codexmcp.ParseElicitApproval(req.Params)
+			return codexApprovalRequestMsg{issueID: issueID, req: req, approval: approval, ok: valid}
 		case res := <-sess.Done():
 			return codexDoneMsg{issueID: issueID, result: res}
 		}
 	}
+}
+
+// codexApprovalDecisionResult builds the JSON-RPC result object for an
+// elicitation/create approval reply. Decision is a codex ReviewDecision value
+// (e.g. "approved", "approved_for_session", "denied", "abort").
+func codexApprovalDecisionResult(decision string) map[string]any {
+	return map[string]any{"decision": decision}
+}
+
+// codexRespondCmd writes an approval decision back to codex on the request's
+// RawID, in a goroutine, surfacing the outcome as codexApprovalResolvedMsg.
+func codexRespondCmd(issueID string, handle *agent.CodexMCPHandle, req codexmcp.ServerRequest, decision string) tea.Cmd {
+	return func() tea.Msg {
+		err := handle.Respond(req.RawID, codexApprovalDecisionResult(decision))
+		return codexApprovalResolvedMsg{issueID: issueID, err: err}
+	}
+}
+
+// handleCodexApprovalRequest routes an inbound exec/patch approval request. It
+// always re-issues the event pump so the transcript keeps streaming while a modal
+// is up (codex emits events while waiting on the approval). Unsupported requests
+// are auto-denied; a second request that arrives while a modal is open is queued.
+func (m Model) handleCodexApprovalRequest(msg codexApprovalRequestMsg) (tea.Model, tea.Cmd) {
+	sess := m.codexSessions[msg.issueID]
+	if sess == nil || sess.handle == nil {
+		// Session gone — nothing to reply on, and re-pumping would be pointless.
+		return m, nil
+	}
+	rePump := codexNextEventCmd(msg.issueID, sess.handle.Session(), sess.handle.ServerRequests())
+
+	// Unknown / unsupported elicitation: deny so the agent loop doesn't stall.
+	if !msg.ok {
+		deny := codexRespondCmd(msg.issueID, sess.handle, msg.req, "denied")
+		toast, tcmd := components.ShowToast(
+			"Codex sent an unsupported approval request — auto-denied.",
+			components.ToastWarn, toastDuration,
+		)
+		m.toast = toast
+		return m, tea.Batch(rePump, deny, tcmd)
+	}
+
+	// A modal is already up — queue this one behind it.
+	if m.approving {
+		m.pendingApprovals = append(m.pendingApprovals, msg)
+		return m, rePump
+	}
+
+	m.openApprovalDialog(msg)
+	return m, rePump
+}
+
+// handleApprovalDialogResult replies to codex with the chosen decision (cancel is
+// treated as a denial), then opens the next queued approval or closes the modal.
+func (m Model) handleApprovalDialogResult(res components.ApprovalDialogResult) (tea.Model, tea.Cmd) {
+	decision := res.Decision
+	if res.Cancelled || decision == "" {
+		decision = "denied"
+	}
+
+	cur := m.currentApproval
+	sess := m.codexSessions[cur.issueID]
+	var respond tea.Cmd
+	if sess != nil && sess.handle != nil {
+		respond = codexRespondCmd(cur.issueID, sess.handle, cur.req, decision)
+	}
+
+	if len(m.pendingApprovals) > 0 {
+		next := m.pendingApprovals[0]
+		m.pendingApprovals = m.pendingApprovals[1:]
+		m.openApprovalDialog(next)
+	} else {
+		m.approving = false
+		m.currentApproval = codexApprovalRequestMsg{}
+	}
+	return m, respond
+}
+
+// openApprovalDialog builds the modal for an approval request and marks the model
+// as approving. Pointer receiver — mutates dialog state in place.
+func (m *Model) openApprovalDialog(msg codexApprovalRequestMsg) {
+	a := msg.approval
+	var files []string
+	if a.Kind == "patch" {
+		files = make([]string, 0, len(a.Changes))
+		for p := range a.Changes {
+			files = append(files, p)
+		}
+		sort.Strings(files)
+	}
+	m.approving = true
+	m.currentApproval = msg
+	m.approvalDialog = components.NewApprovalDialog(
+		a.Kind, a.Message, a.Command, a.Cwd, a.Reason, files, m.width, m.height,
+	)
 }
 
 // codexReplyCmd invokes Handle.Reply in a goroutine and returns the
@@ -105,14 +226,15 @@ func codexReplyCmd(issueID, prompt string, handle *agent.CodexMCPHandle) tea.Cmd
 // initial handshake (the mcp_startup of sub-MCP servers) can take many
 // seconds — return codexLaunchedMsg only after the session is ready to
 // stream events.
-func codexLaunchCmd(issueID, prompt, projectDir, clientVersion string) tea.Cmd {
+func codexLaunchCmd(issueID, prompt, projectDir, clientVersion, approvalPolicy string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 		handle, err := agent.LaunchCodexMCP(ctx, agent.LaunchCodexMCPOptions{
-			Prompt:        prompt,
-			ProjectDir:    projectDir,
-			ClientVersion: clientVersion,
+			Prompt:         prompt,
+			ProjectDir:     projectDir,
+			ClientVersion:  clientVersion,
+			ApprovalPolicy: approvalPolicy,
 		})
 		if err != nil {
 			return codexLaunchErrorMsg{issueID: issueID, err: err}
@@ -295,5 +417,8 @@ func (m Model) toggleCodexTranscript() (tea.Model, tea.Cmd) {
 		Status:  "running",
 		StartAt: time.Now(),
 	})
-	return m, codexLaunchCmd(issue.ID, prompt, m.projectDir, "")
+	// M-key launches are human-present: use on-request so codex surfaces exec
+	// and apply-patch approvals through mg's modal instead of auto-approving.
+	// Polecat/gt-sling and tmux launches keep "never" (no human at the terminal).
+	return m, codexLaunchCmd(issue.ID, prompt, m.projectDir, "", "on-request")
 }

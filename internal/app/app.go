@@ -161,6 +161,14 @@ type Model struct {
 	codexReplyID    string
 	codexReplyInput textinput.Model
 
+	// Codex MCP approval modal (exec/patch). When approving is true the dialog
+	// captures input; currentApproval holds the in-flight request (for its RawID
+	// and issue), and pendingApprovals queues any that arrive while one is open.
+	approving        bool
+	approvalDialog   components.ApprovalDialog
+	currentApproval  codexApprovalRequestMsg
+	pendingApprovals []codexApprovalRequestMsg
+
 	// Recovery confirmation dialog
 	recovering     bool
 	recoveryDialog components.RecoveryDialog
@@ -761,6 +769,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Forward all messages to the codex approval dialog when active
+	if m.approving {
+		if km, ok := msg.(tea.KeyPressMsg); ok && km.String() == "ctrl+c" {
+			logRoute("approvalDialog ctrl+c -> quit")
+			return m, tea.Quit
+		}
+		logRoute("approvalDialog forward")
+		var cmd tea.Cmd
+		m.approvalDialog, cmd = m.approvalDialog.Update(msg)
+		return m, cmd
+	}
+
 	// Forward all messages to recovery dialog when active
 	if m.recovering {
 		if km, ok := msg.(tea.KeyPressMsg); ok && km.String() == "ctrl+c" {
@@ -1137,7 +1157,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			components.ToastSuccess, toastDuration,
 		)
 		m.toast = toast
-		return m, tea.Batch(cmd, codexNextEventCmd(msg.issueID, msg.sess.handle.Session()))
+		return m, tea.Batch(cmd, codexNextEventCmd(msg.issueID, msg.sess.handle.Session(), msg.sess.handle.ServerRequests()))
 
 	case codexLaunchErrorMsg:
 		toast, cmd := components.ShowToast(
@@ -1163,7 +1183,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if sess.handle == nil {
 			return m, nil
 		}
-		return m, codexNextEventCmd(msg.issueID, sess.handle.Session())
+		return m, codexNextEventCmd(msg.issueID, sess.handle.Session(), sess.handle.ServerRequests())
 
 	case codexDoneMsg:
 		sess := m.codexSessions[msg.issueID]
@@ -1195,7 +1215,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if sess == nil || sess.handle == nil {
 			return m, nil
 		}
-		return m, codexNextEventCmd(msg.issueID, msg.sess)
+		return m, codexNextEventCmd(msg.issueID, msg.sess, sess.handle.ServerRequests())
 
 	case codexReplyErrorMsg:
 		toast, cmd := components.ShowToast(
@@ -1213,6 +1233,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, cmd
+
+	case codexApprovalRequestMsg:
+		return m.handleCodexApprovalRequest(msg)
+
+	case components.ApprovalDialogResult:
+		return m.handleApprovalDialogResult(msg)
+
+	case codexApprovalResolvedMsg:
+		if msg.err != nil {
+			toast, cmd := components.ShowToast(
+				fmt.Sprintf("Codex approval reply failed: %s", msg.err),
+				components.ToastError, toastDuration,
+			)
+			m.toast = toast
+			return m, cmd
+		}
+		return m, nil
 
 	case agentStatusMsg:
 		m.activeAgents = msg.activeAgents
@@ -3530,6 +3567,14 @@ func (m Model) View() tea.View {
 		formContent := lipgloss.JoinVertical(lipgloss.Left, formTitle, "", formBody, "", formHint)
 		formBox := ui.HelpOverlayBg.Width(m.width - 8).Render(formContent)
 		return altView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, formBox))
+	}
+
+	if m.approving {
+		adTitle := ui.HelpTitle.Render("[ CODEX APPROVAL ]")
+		adBody := m.approvalDialog.View()
+		adContent := lipgloss.JoinVertical(lipgloss.Left, adTitle, "", adBody)
+		adBox := ui.HelpOverlayBg.Width(m.width - 8).Render(adContent)
+		return altView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, adBox))
 	}
 
 	if m.recovering {

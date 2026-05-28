@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -27,6 +28,25 @@ type CodexMCPHandle struct {
 // Session returns the most recent codexmcp.Session attached to this handle.
 // After Reply rotates the session, Session() returns the new one.
 func (h *CodexMCPHandle) Session() *codexmcp.Session { return h.session }
+
+// ServerRequests returns the client's server-initiated request channel (codex
+// approval prompts). The channel is stable across Reply session rotation since it
+// belongs to the underlying client/subprocess. Returns nil if the handle is closed.
+func (h *CodexMCPHandle) ServerRequests() <-chan codexmcp.ServerRequest {
+	if h.client == nil {
+		return nil
+	}
+	return h.client.ServerRequests()
+}
+
+// Respond answers a server-initiated request (e.g. an approval prompt) with a
+// result, echoing the request's RawID. See codexmcp.Client.Respond.
+func (h *CodexMCPHandle) Respond(rawID json.RawMessage, result any) error {
+	if h.client == nil {
+		return errors.New("agent: CodexMCPHandle has no client (already closed?)")
+	}
+	return h.client.Respond(rawID, result)
+}
 
 // Reply continues the conversation by invoking codex-reply with the given
 // prompt against the threadID captured from the original session. The new
