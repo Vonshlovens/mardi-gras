@@ -19,6 +19,10 @@ type fakeServer struct {
 	enc *json.Encoder
 
 	Incoming chan request
+	// Raw mirrors Incoming as the undecoded JSON bytes, so tests can inspect
+	// fields request doesn't model (e.g. a response's result, or a string id
+	// that won't fit request.ID int). Best-effort, non-blocking.
+	Raw chan json.RawMessage
 
 	wMu     sync.Mutex
 	stopped bool
@@ -34,6 +38,7 @@ func newFakeServer(t *testing.T) (*Client, *fakeServer) {
 		dec:      json.NewDecoder(bufio.NewReader(sr)),
 		enc:      json.NewEncoder(sw),
 		Incoming: make(chan request, 16),
+		Raw:      make(chan json.RawMessage, 16),
 		stop:     make(chan struct{}),
 	}
 
@@ -91,10 +96,17 @@ func (f *fakeServer) readLoop(sr, sw interface{ Close() error }) {
 		close(f.Incoming)
 	}()
 	for {
-		var req request
-		if err := f.dec.Decode(&req); err != nil {
+		var raw json.RawMessage
+		if err := f.dec.Decode(&raw); err != nil {
 			return
 		}
+		// Mirror raw bytes (best-effort) before lossy decode into request.
+		select {
+		case f.Raw <- raw:
+		default:
+		}
+		var req request
+		_ = json.Unmarshal(raw, &req) // ignore errors: string ids / responses decode partially
 		select {
 		case <-f.stop:
 			return
@@ -290,5 +302,117 @@ func TestCloseIsIdempotentAndUnblocksCallers(t *testing.T) {
 	}
 	if err := c.Close(); err != nil {
 		t.Fatalf("double close: %v", err)
+	}
+}
+
+func TestServerInitiatedRequestRoutedToChannel(t *testing.T) {
+	c, fs := newFakeServer(t)
+
+	fs.SendRaw(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      17,
+		"method":  "elicitation/create",
+		"params": map[string]any{
+			"message":           "Allow Codex to run `ls -la`?",
+			"codex_elicitation": "exec-approval",
+			"codex_command":     []string{"ls", "-la"},
+			"codex_cwd":         "/work/proj",
+		},
+	})
+
+	select {
+	case sr := <-c.ServerRequests():
+		if sr.Method != "elicitation/create" {
+			t.Fatalf("method = %q, want elicitation/create", sr.Method)
+		}
+		var id int
+		if err := json.Unmarshal(sr.RawID, &id); err != nil || id != 17 {
+			t.Fatalf("RawID = %s (err %v), want 17", sr.RawID, err)
+		}
+		a, ok := ParseElicitApproval(sr.Params)
+		if !ok || a.Kind != "exec" {
+			t.Fatalf("ParseElicitApproval ok=%v kind=%q, want true/exec", ok, a.Kind)
+		}
+		if strings.Join(a.Command, " ") != "ls -la" {
+			t.Fatalf("command = %v, want [ls -la]", a.Command)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server request not routed to ServerRequests()")
+	}
+}
+
+// TestServerRequestStringIDSurvivesAndEchoes guards the id-hardening: a string id
+// (allowed by the MCP spec) must not kill readLoop, and Respond must echo it back
+// verbatim rather than coercing to an int.
+func TestServerRequestStringIDSurvivesAndEchoes(t *testing.T) {
+	c, fs := newFakeServer(t)
+
+	fs.SendRaw(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "abc-1",
+		"method":  "elicitation/create",
+		"params": map[string]any{
+			"message":           "Allow Codex to apply a patch?",
+			"codex_elicitation": "patch-approval",
+			"codex_changes": map[string]any{
+				"internal/foo/bar.go": map[string]any{"type": "add", "content": "x"},
+			},
+		},
+	})
+
+	var sr ServerRequest
+	select {
+	case sr = <-c.ServerRequests():
+	case <-time.After(2 * time.Second):
+		t.Fatal("string-id server request not routed")
+	}
+	if string(sr.RawID) != `"abc-1"` {
+		t.Fatalf("RawID = %s, want \"abc-1\"", sr.RawID)
+	}
+	a, ok := ParseElicitApproval(sr.Params)
+	if !ok || a.Kind != "patch" {
+		t.Fatalf("ParseElicitApproval ok=%v kind=%q, want true/patch", ok, a.Kind)
+	}
+	if _, has := a.Changes["internal/foo/bar.go"]; !has {
+		t.Fatalf("changes missing expected path: %v", a.Changes)
+	}
+
+	// Drain handshake bytes (initialize, notifications/initialized) buffered on
+	// Raw so the next read is mg's response.
+	for draining := true; draining; {
+		select {
+		case <-fs.Raw:
+		default:
+			draining = false
+		}
+	}
+
+	// Respond and confirm the server sees the string id echoed verbatim.
+	if err := c.Respond(sr.RawID, map[string]any{"decision": "denied"}); err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	select {
+	case raw := <-fs.Raw:
+		var got struct {
+			ID     json.RawMessage `json:"id"`
+			Result struct {
+				Decision string `json:"decision"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("decode response: %v (raw %s)", err, raw)
+		}
+		if string(got.ID) != `"abc-1"` {
+			t.Fatalf("echoed id = %s, want \"abc-1\"", got.ID)
+		}
+		if got.Result.Decision != "denied" {
+			t.Fatalf("decision = %q, want denied", got.Result.Decision)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Respond produced no output")
+	}
+
+	if err := c.ReadError(); err != nil {
+		t.Fatalf("readLoop died on string id: %v", err)
 	}
 }

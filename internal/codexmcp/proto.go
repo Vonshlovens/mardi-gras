@@ -27,13 +27,32 @@ type notification struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
+// response models any inbound JSON-RPC object: a response to one of our
+// requests, a notification (codex/event), or a server-initiated request
+// (elicitation/create). ID is kept as RawMessage so a string id can't fail the
+// whole-line decode — our own request ids are always ints (see parseIntID),
+// while server-request ids are echoed back verbatim.
 type response struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      *int            `json:"id"`
+	ID      json.RawMessage `json:"id,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *rpcError       `json:"error,omitempty"`
 	Method  string          `json:"method,omitempty"`
 	Params  json.RawMessage `json:"params,omitempty"`
+}
+
+// parseIntID extracts an integer id from a raw JSON-RPC id. Returns ok=false for
+// absent or non-integer (e.g. string) ids. Used to route responses to the
+// pending map, which is keyed by the int ids we allocate for our own requests.
+func parseIntID(raw json.RawMessage) (int, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var id int
+	if err := json.Unmarshal(raw, &id); err != nil {
+		return 0, false
+	}
+	return id, true
 }
 
 type rpcError struct {
@@ -192,4 +211,69 @@ type SessionConfiguredEvent struct {
 	ApprovalPolicy string `json:"approval_policy"`
 	Cwd            string `json:"cwd"`
 	RolloutPath    string `json:"rollout_path"`
+}
+
+// ServerRequest is an inbound JSON-RPC request initiated by the codex MCP server
+// (as opposed to a response to one of our requests, or a codex/event
+// notification). Codex uses these for approval prompts via `elicitation/create`.
+// RawID is the server-allocated id; mg must echo it back verbatim on the reply
+// (see Client.Respond) — the type (number vs string) is server-defined.
+type ServerRequest struct {
+	RawID  json.RawMessage
+	Method string
+	Params json.RawMessage
+}
+
+// ElicitApproval is the decoded payload of an `elicitation/create` approval
+// request. Codex flattens the approval fields into the params object with
+// `codex_*` keys (rather than nesting them), discriminated by `codex_elicitation`.
+type ElicitApproval struct {
+	Kind    string                     // "exec" | "patch" | "" (unknown)
+	Message string                     // human-readable prompt (`message`)
+	Command []string                   // exec: codex_command (argv)
+	Cwd     string                     // exec: codex_cwd
+	Reason  string                     // codex_reason (optional)
+	Changes map[string]json.RawMessage // patch: codex_changes (path -> FileChange)
+}
+
+// elicitApprovalKind maps the `codex_elicitation` discriminator to ElicitApproval.Kind.
+const (
+	elicitExecDiscriminator  = "exec-approval"
+	elicitPatchDiscriminator = "patch-approval"
+)
+
+// ParseElicitApproval decodes an `elicitation/create` params object into an
+// ElicitApproval. Returns ok=false when the request is not an exec/patch approval
+// (e.g. an unknown or unsupported elicitation), so callers can auto-deny.
+func ParseElicitApproval(params json.RawMessage) (ElicitApproval, bool) {
+	if len(params) == 0 {
+		return ElicitApproval{}, false
+	}
+	var raw struct {
+		Elicitation string                     `json:"codex_elicitation"`
+		Message     string                     `json:"message"`
+		Command     []string                   `json:"codex_command"`
+		Cwd         string                     `json:"codex_cwd"`
+		Reason      string                     `json:"codex_reason"`
+		Changes     map[string]json.RawMessage `json:"codex_changes"`
+	}
+	if err := json.Unmarshal(params, &raw); err != nil {
+		return ElicitApproval{}, false
+	}
+	a := ElicitApproval{
+		Message: raw.Message,
+		Command: raw.Command,
+		Cwd:     raw.Cwd,
+		Reason:  raw.Reason,
+		Changes: raw.Changes,
+	}
+	switch raw.Elicitation {
+	case elicitExecDiscriminator:
+		a.Kind = "exec"
+	case elicitPatchDiscriminator:
+		a.Kind = "patch"
+	default:
+		return a, false
+	}
+	return a, true
 }
