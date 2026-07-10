@@ -41,6 +41,7 @@ const (
 	ActionCreateConvoy
 	ActionCascadeClose
 	ActionCycleLayout
+	ActionPickTheme
 	ActionRecoverRigs
 	ActionPrunePreview
 	ActionPruneClosed

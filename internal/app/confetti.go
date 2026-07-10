@@ -21,9 +21,11 @@ const (
 
 var confettiGlyphs = []string{"●", "◆", "⚜", "✦", "✧", "★", "♦"}
 var necklaceGlyphs = []string{"●", "◆", "●", "◆", "●"} // alternating bead shapes
-var confettiColors = []color.Color{
-	ui.Purple, ui.Gold, ui.Green,
-	ui.BrightPurple, ui.BrightGold, ui.BrightGreen,
+func currentConfettiColors() []color.Color {
+	return []color.Color{
+		ui.Purple, ui.Gold, ui.Green,
+		ui.BrightPurple, ui.BrightGold, ui.BrightGreen,
+	}
 }
 
 type particle struct {
@@ -65,11 +67,12 @@ type confettiTickMsg struct{}
 func NewConfetti(width, height int) Confetti {
 	centerX := float64(width) / 2
 	centerY := float64(height) / 2
+	colors := currentConfettiColors()
 
 	particles := make([]particle, confettiParticles)
 	for i := range particles {
 		g := confettiGlyphs[rand.IntN(len(confettiGlyphs))]
-		c := confettiColors[rand.IntN(len(confettiColors))]
+		c := colors[rand.IntN(len(colors))]
 		particles[i] = particle{
 			x:      centerX,
 			y:      centerY,
@@ -89,7 +92,7 @@ func NewConfetti(width, height int) Confetti {
 		styledBeads := make([]string, necklaceLength)
 		styledConns := make([]string, necklaceLength)
 
-		// Each necklace uses a consistent Mardi Gras color trio
+		// Each necklace uses a consistent trio from the active theme.
 		baseIdx := i % 3
 		colorTriple := []color.Color{ui.BrightPurple, ui.BrightGold, ui.BrightGreen}
 		for j := range beadColors {

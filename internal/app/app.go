@@ -75,7 +75,7 @@ type Model struct {
 	agentRuntime  agent.Runtime
 	projectDir    string
 	inTmux        bool
-	activeAgents  map[string]string   // issueID -> tmux window name
+	activeAgents  map[string]string   // issueID -> tracked tmux pane ID (inside agent window)
 	gtEnv         gastown.Env         // Gas Town environment, read once at startup
 	driver        gastown.Driver      // Orchestrator seam; GTDriver today (gt CLI)
 	townStatus    *gastown.TownStatus // Latest gt status, nil when unavailable
@@ -108,6 +108,17 @@ type Model struct {
 	showPalette bool
 	palette     components.Palette
 	startedAt   time.Time // guards ":" palette trigger during terminal negotiation
+
+	// Agent runtime picker (opened by `a` outside an orchestrator workflow).
+	agentPicking bool
+	agentPicker  components.AgentPicker
+	agentIssueID string
+	agentDraft   string
+
+	// Theme picker (T): previews palettes live, accepts with Enter, and
+	// restores the original palette with Esc.
+	themePicking bool
+	themePicker  components.ThemePicker
 
 	// Formula picker state
 	formulaPicking bool
@@ -450,7 +461,49 @@ func (m *Model) startQuickAction(mode, issueID, prompt, placeholder string) tea.
 	return textinput.Blink
 }
 
-// agentFinishedMsg is sent when a launched claude session exits.
+// openAgentPicker starts the local runtime chooser for an issue. Gas Town and
+// Gas City retain their existing sling flows; this is only used for Mardi
+// Gras's direct CLI launch path.
+func (m Model) openAgentPicker(issue *data.Issue) (tea.Model, tea.Cmd) {
+	if issue == nil {
+		return m, nil
+	}
+
+	// Refresh discovery when opening the picker so installing a CLI while mg is
+	// running does not require a restart. All choices stay visible even when no
+	// runtime is currently installed; Enter then gives a precise PATH error.
+	m.agentAvail = agent.Available()
+	m.agentRuntime = agent.DetectRuntime()
+	m.agentPicking = true
+	m.agentIssueID = issue.ID
+	m.agentDraft = agent.BriefPrompt(*issue)
+	m.agentPicker = components.NewAgentPicker(m.width, m.height, m.agentRuntime)
+	return m, nil
+}
+
+// openThemePicker starts Tuxedo-style palette selection. The component owns
+// keyboard navigation; the root model applies preview results so cached views
+// (parade styles and markdown) are refreshed as one coherent change.
+func (m Model) openThemePicker() (tea.Model, tea.Cmd) {
+	m.themePicking = true
+	m.themePicker = components.NewThemePicker(m.width, m.height, ui.CurrentThemeIndex())
+	return m, nil
+}
+
+// refreshTheme applies the selected UI palette to the few views that cache
+// rendered output. Detail.RefreshTheme deliberately preserves its viewport
+// offset, so reading a long issue stays stable while previewing themes.
+func (m *Model) refreshTheme(index int) {
+	ui.SetThemeIndex(index)
+	m.spinner = newLoadingSpinner()
+	if !m.ready {
+		return
+	}
+	m.rebuildParade()
+	m.detail.RefreshTheme()
+}
+
+// agentFinishedMsg is sent when a launched local agent session exits.
 type agentFinishedMsg struct{ err error }
 
 type agentLaunchedMsg struct {
@@ -750,6 +803,83 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Handle agent runtime picker result.
+	if result, ok := msg.(components.AgentPickerResult); ok {
+		m.agentPicking = false
+		issueID := m.agentIssueID
+		draft := m.agentDraft
+		m.agentIssueID = ""
+		m.agentDraft = ""
+
+		if result.Cancelled {
+			return m, nil
+		}
+		if !result.Runtime.Installed() {
+			toast, cmd := components.ShowToast(
+				result.Runtime.RuntimeLabel()+" is not available on PATH",
+				components.ToastError, toastDuration,
+			)
+			m.toast = toast
+			return m, cmd
+		}
+
+		// Do not launch a stale picker target after an issue disappears during
+		// a refresh. (The picker captures its ID rather than mutable selection.)
+		found := false
+		for _, issue := range m.issues {
+			if issue.ID == issueID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			toast, cmd := components.ShowToast(
+				"Issue "+issueID+" is no longer available",
+				components.ToastInfo, toastDuration,
+			)
+			m.toast = toast
+			return m, cmd
+		}
+
+		if m.inTmux {
+			runtime := result.Runtime
+			return m, func() tea.Msg {
+				paneID, err := agent.LaunchInTmux(runtime, m.projectDir, issueID, draft)
+				if err != nil {
+					return agentLaunchErrorMsg{issueID: issueID, err: err}
+				}
+				return agentLaunchedMsg{issueID: issueID, windowName: paneID}
+			}
+		}
+
+		command := agent.InteractiveCommand(result.Runtime, m.projectDir)
+		return m, tea.ExecProcess(command, func(err error) tea.Msg {
+			return agentFinishedMsg{err: err}
+		})
+	}
+
+	// Handle a Tuxedo-style theme picker preview/selection. Preview events keep
+	// the modal open; Enter saves, while Esc has already supplied the original
+	// index for a clean rollback.
+	if result, ok := msg.(components.ThemePickerResult); ok {
+		m.refreshTheme(result.Index)
+		if result.Preview {
+			return m, nil
+		}
+		m.themePicking = false
+		if result.Cancelled {
+			return m, nil
+		}
+		if err := ui.SaveThemePreference(); err != nil {
+			toast, cmd := components.ShowToast("Theme save failed: "+err.Error(), components.ToastError, toastDuration)
+			m.toast = toast
+			return m, cmd
+		}
+		toast, cmd := components.ShowToast("Theme: "+ui.CurrentTheme().Name, components.ToastSuccess, toastDuration)
+		m.toast = toast
+		return m, cmd
+	}
+
 	// Handle palette result
 	if result, ok := msg.(components.PaletteResult); ok {
 		m.showPalette = false
@@ -789,6 +919,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.executePaletteAction(result.Action)
 		}
 		return m, nil
+	}
+
+	// Forward all messages to the theme picker when active.
+	if m.themePicking {
+		if km, ok := msg.(tea.KeyPressMsg); ok && km.String() == "ctrl+c" {
+			logRoute("themePicker ctrl+c -> quit")
+			return m, tea.Quit
+		}
+		logRoute("themePicker forward")
+		var cmd tea.Cmd
+		m.themePicker, cmd = m.themePicker.Update(msg)
+		return m, cmd
+	}
+
+	// Forward all messages to the agent picker when active.
+	if m.agentPicking {
+		if km, ok := msg.(tea.KeyPressMsg); ok && km.String() == "ctrl+c" {
+			logRoute("agentPicker ctrl+c -> quit")
+			return m, tea.Quit
+		}
+		logRoute("agentPicker forward")
+		var cmd tea.Cmd
+		m.agentPicker, cmd = m.agentPicker.Update(msg)
+		return m, cmd
 	}
 
 	// Forward all messages to palette when active
@@ -2040,6 +2194,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "M":
 		return m.toggleCodexTranscript()
 
+	case "T":
+		return m.openThemePicker()
+
 	case "c":
 		m.parade.ToggleClosed()
 		m.syncSelection()
@@ -2105,7 +2262,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 		issue := m.parade.SelectedIssue
-		if issue == nil || !m.agentAvail {
+		if issue == nil {
 			return m, nil
 		}
 		if _, active := m.activeAgents[issue.ID]; active && m.inTmux {
@@ -2123,23 +2280,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		deps := issue.EvaluateDependencies(m.detail.IssueMap, m.blockingTypes)
-		prompt := agent.BuildPrompt(*issue, deps, m.detail.IssueMap)
-
-		if m.inTmux {
-			issueID := issue.ID
-			return m, func() tea.Msg {
-				winName, err := agent.LaunchInTmux(prompt, m.projectDir, issueID)
-				if err != nil {
-					return agentLaunchErrorMsg{issueID: issueID, err: err}
-				}
-				return agentLaunchedMsg{issueID: issueID, windowName: winName}
-			}
-		}
-		c := agent.Command(prompt, m.projectDir)
-		return m, tea.ExecProcess(c, func(err error) tea.Msg {
-			return agentFinishedMsg{err: err}
-		})
+		return m.openAgentPicker(issue)
 
 	case "A":
 		issue := m.parade.SelectedIssue
@@ -2673,6 +2814,7 @@ func (m Model) buildPaletteCommands() []components.PaletteCommand {
 		{Name: "Help", Desc: "Show keybinding help", Key: "?", Action: components.ActionHelp},
 		{Name: "Quit", Desc: "Exit Mardi Gras", Key: "q", Action: components.ActionQuit},
 		{Name: "Cycle layout", Desc: "Switch panel arrangement", Key: "", Action: components.ActionCycleLayout},
+		{Name: "Pick theme", Desc: "Preview and select a Tuxedo palette", Key: "T", Action: components.ActionPickTheme},
 		{Name: "Prune preview (closed > 30d)", Desc: "Dry-run: report closed non-ephemeral beads older than 30d", Key: "", Action: components.ActionPrunePreview},
 		{Name: "Prune closed > 30d (force)", Desc: "Delete closed non-ephemeral beads older than 30d — destructive, no undo", Key: "", Action: components.ActionPruneClosed},
 		{Name: "Claim next ready", Desc: "Atomically claim the top-priority ready bead (bd ready --claim)", Key: "", Action: components.ActionClaimNextReady},
@@ -2680,7 +2822,7 @@ func (m Model) buildPaletteCommands() []components.PaletteCommand {
 
 	if m.agentAvail {
 		cmds = append(cmds,
-			components.PaletteCommand{Name: "Launch agent", Desc: fmt.Sprintf("Start %s agent on issue", m.agentRuntime.RuntimeLabel()), Key: "a", Action: components.ActionLaunchAgent},
+			components.PaletteCommand{Name: "Launch agent", Desc: "Choose a runtime and start an agent", Key: "a", Action: components.ActionLaunchAgent},
 			components.PaletteCommand{Name: "Kill agent", Desc: "Stop agent working on issue", Key: "A", Action: components.ActionKillAgent},
 		)
 		if m.agentRuntime == agent.RuntimeCodex && m.inTmux {
@@ -2802,6 +2944,8 @@ func (m Model) executePaletteAction(action components.PaletteAction) (tea.Model,
 		m.toast = toast
 		m.layout()
 		return m, cmd
+	case components.ActionPickTheme:
+		return m.openThemePicker()
 	case components.ActionRecoverRigs:
 		deadRigs := gastown.FindDeadRigs(m.townStatus)
 		if len(deadRigs) == 0 {
@@ -3705,6 +3849,16 @@ func (m Model) View() tea.View {
 		if overlay != "" {
 			screen = overlayStrings(screen, overlay)
 		}
+	}
+
+	if m.themePicking {
+		m.themePicker.SetSize(m.width, m.height)
+		return altView(m.themePicker.View())
+	}
+
+	if m.agentPicking {
+		m.agentPicker.SetSize(m.width, m.height)
+		return altView(m.agentPicker.View())
 	}
 
 	if m.showPalette {

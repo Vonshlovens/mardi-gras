@@ -1,12 +1,16 @@
 package app
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/matt-wright86/mardi-gras/internal/agent"
 	"github.com/matt-wright86/mardi-gras/internal/components"
 	"github.com/matt-wright86/mardi-gras/internal/data"
+	"github.com/matt-wright86/mardi-gras/internal/gastown"
+	"github.com/matt-wright86/mardi-gras/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -202,6 +206,69 @@ func TestKeyNOpensCreateForm(t *testing.T) {
 
 	if !got.creating {
 		t.Fatal("expected creating to be true after pressing N")
+	}
+}
+
+func TestKeyAOpensAgentPickerWhenCachedAvailabilityIsFalse(t *testing.T) {
+	got := setupModel(t)
+	got.gtEnv.Available = false
+	got.driver = gastown.NewGTDriver()
+	got.agentAvail = false
+
+	model, cmd := got.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	got = model.(Model)
+
+	if cmd != nil {
+		t.Fatal("opening the agent picker should not launch a process yet")
+	}
+	if !got.agentPicking {
+		t.Fatal("expected a to open the agent picker")
+	}
+	if got.agentIssueID != "open-1" {
+		t.Fatalf("agentIssueID = %q, want open-1", got.agentIssueID)
+	}
+	if got.agentDraft != "Work on Beads issue open-1: open-1" {
+		t.Fatalf("agentDraft = %q", got.agentDraft)
+	}
+	if view := got.View().Content; !strings.Contains(view, "CHOOSE AN AGENT") {
+		t.Fatalf("agent picker not rendered:\n%s", view)
+	}
+}
+
+func TestAgentPickerCancellationClearsTarget(t *testing.T) {
+	got := setupModel(t)
+	got.agentPicking = true
+	got.agentIssueID = "open-1"
+	got.agentDraft = "Work on Beads issue open-1: open-1"
+
+	model, cmd := got.Update(components.AgentPickerResult{Cancelled: true})
+	got = model.(Model)
+
+	if cmd != nil {
+		t.Fatal("cancelled picker should not launch a process")
+	}
+	if got.agentPicking || got.agentIssueID != "" || got.agentDraft != "" {
+		t.Fatalf("picker state was not cleared: picking=%v issue=%q draft=%q", got.agentPicking, got.agentIssueID, got.agentDraft)
+	}
+}
+
+func TestAgentPickerUnavailableRuntimeShowsToast(t *testing.T) {
+	got := setupModel(t)
+	got.agentPicking = true
+	got.agentIssueID = "open-1"
+	got.agentDraft = "Work on Beads issue open-1: open-1"
+
+	model, cmd := got.Update(components.AgentPickerResult{Runtime: agent.Runtime("missing-runtime")})
+	got = model.(Model)
+
+	if cmd == nil {
+		t.Fatal("unavailable runtime should show a toast")
+	}
+	if got.toast.Level != components.ToastError {
+		t.Fatalf("toast level = %v, want error", got.toast.Level)
+	}
+	if !strings.Contains(got.toast.Message, "not available on PATH") {
+		t.Fatalf("unexpected toast: %q", got.toast.Message)
 	}
 }
 
@@ -619,5 +686,45 @@ func TestKeyAMultiSlingWithSelection(t *testing.T) {
 	// Selection should be cleared
 	if got.parade.SelectionCount() != 0 {
 		t.Fatal("expected selection to be cleared after multi-sling")
+	}
+}
+
+func TestKeyTOpensThemePickerWithLivePreviewAndCancel(t *testing.T) {
+	original := ui.CurrentThemeIndex()
+	t.Cleanup(func() { ui.SetThemeIndex(original) })
+
+	got := setupModel(t)
+	model, _ := got.Update(tea.KeyPressMsg{Code: 'T', Text: "T"})
+	got = model.(Model)
+	if !got.themePicking {
+		t.Fatal("expected T to open the theme picker")
+	}
+
+	model, cmd := got.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	got = model.(Model)
+	if cmd == nil {
+		t.Fatal("expected navigation to emit a live preview result")
+	}
+	model, _ = got.Update(cmd())
+	got = model.(Model)
+	if got.themePicking == false {
+		t.Fatal("preview should keep the theme picker open")
+	}
+	if ui.CurrentThemeIndex() == original {
+		t.Fatal("preview should apply the next theme before acceptance")
+	}
+
+	model, cmd = got.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	got = model.(Model)
+	if cmd == nil {
+		t.Fatal("expected escape to emit a cancellation result")
+	}
+	model, _ = got.Update(cmd())
+	got = model.(Model)
+	if got.themePicking {
+		t.Fatal("expected escape to close the theme picker")
+	}
+	if ui.CurrentThemeIndex() != original {
+		t.Fatalf("escape restored theme index %d, want %d", ui.CurrentThemeIndex(), original)
 	}
 }

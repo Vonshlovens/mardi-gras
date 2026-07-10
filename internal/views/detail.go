@@ -132,6 +132,19 @@ func (d *Detail) SetSize(width, height int) {
 	}
 }
 
+// RefreshTheme rebuilds rendered markdown after a theme change without moving
+// the reader away from their current position in the detail viewport.
+func (d *Detail) RefreshTheme() {
+	d.mdRenderer = nil
+	if d.Issue == nil {
+		return
+	}
+
+	offset := d.Viewport.YOffset()
+	d.Viewport.SetContent(d.renderContent())
+	d.Viewport.SetYOffset(offset)
+}
+
 // View renders the detail panel.
 func (d *Detail) View() string {
 	// The left border doubles as the pane divider and the focus cue: it

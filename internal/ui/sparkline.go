@@ -30,6 +30,15 @@ func RenderSparkline(values []int, width int) string {
 		return lipgloss.NewStyle().Foreground(Dim).Render(
 			strings.Repeat("▁", min(len(values), width)))
 	}
+	if CurrentTheme().Terminal {
+		var b strings.Builder
+		n := min(len(values), width)
+		for i := 0; i < n; i++ {
+			level := min(values[i]*7/maxVal, 7)
+			b.WriteString(GradientHeat.At(values[i] * 100 / maxVal).Render(sparkBlocks[level]))
+		}
+		return b.String()
+	}
 
 	// Gradient: green (low activity) → gold (medium) → red (high)
 	cLow := toColorful(DimGreen)
@@ -87,6 +96,9 @@ func HeatChar(eventCount, maxCount int) string {
 	sym := "▪"
 	if t > 0.7 {
 		sym = "▮"
+	}
+	if CurrentTheme().Terminal {
+		return GradientHeat.At(int(t * 100)).Render(sym)
 	}
 
 	return getCachedChar([]rune(sym)[0], c.Hex())
@@ -167,6 +179,14 @@ func MiniSparkline(values [3]int) string {
 	}
 	if allZero {
 		return ""
+	}
+	if CurrentTheme().Terminal {
+		var b strings.Builder
+		for _, v := range values {
+			level := min(v*7/maxVal, 7)
+			b.WriteString(GradientPurpleGold.At(v * 100 / maxVal).Render(sparkBlocks[level]))
+		}
+		return b.String()
 	}
 
 	cLow := toColorful(DimGreen)

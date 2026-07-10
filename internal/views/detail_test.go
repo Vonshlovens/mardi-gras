@@ -138,6 +138,41 @@ func TestSetIssuePreservesScrollOnSameIssue(t *testing.T) {
 	}
 }
 
+func TestRefreshThemePreservesDetailScroll(t *testing.T) {
+	issue := data.Issue{
+		ID:          "mg-001",
+		Title:       "Long issue",
+		Description: strings.Repeat("**Markdown description line.**\n\n", 80),
+		Status:      data.StatusOpen,
+		Priority:    data.PriorityMedium,
+		IssueType:   data.TypeTask,
+	}
+	d := NewDetail(60, 20, []data.Issue{issue})
+	d.SetIssue(&issue)
+	previousRenderer := d.mdRenderer
+	if previousRenderer == nil {
+		t.Fatal("expected initial markdown renderer")
+	}
+
+	d.Viewport.SetYOffset(15)
+	want := d.Viewport.YOffset()
+	if want == 0 {
+		t.Fatal("test setup: expected non-zero detail scroll offset")
+	}
+
+	d.RefreshTheme()
+
+	if d.mdRenderer == nil {
+		t.Fatal("expected markdown renderer to be recreated")
+	}
+	if d.mdRenderer == previousRenderer {
+		t.Fatal("expected RefreshTheme to invalidate the markdown renderer")
+	}
+	if got := d.Viewport.YOffset(); got != want {
+		t.Fatalf("scroll position after theme refresh = %d, want %d", got, want)
+	}
+}
+
 func TestSetSizeUpdatesDimensions(t *testing.T) {
 	issues := []data.Issue{
 		{ID: "mg-001", Title: "Test", Status: data.StatusOpen, Priority: data.PriorityMedium, IssueType: data.TypeTask},

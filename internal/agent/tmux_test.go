@@ -38,6 +38,25 @@ func TestWindowName(t *testing.T) {
 	}
 }
 
+func TestNewWindowArgsUsesDetachedWindow(t *testing.T) {
+	args := newWindowArgs("/tmp/project", "mg-bd-a1b2", []string{"codex", "--yolo"})
+	wantPrefix := []string{
+		"new-window", "-d", "-c", "/tmp/project", "-n", "mg-bd-a1b2",
+		"-P", "-F", "#{pane_id}", "--",
+	}
+	if len(args) != len(wantPrefix)+2 {
+		t.Fatalf("args = %v", args)
+	}
+	for i, want := range wantPrefix {
+		if args[i] != want {
+			t.Errorf("arg[%d] = %q, want %q", i, args[i], want)
+		}
+	}
+	if args[len(wantPrefix)] != "codex" || args[len(wantPrefix)+1] != "--yolo" {
+		t.Errorf("agent command missing from args: %v", args)
+	}
+}
+
 func TestParseAgentPanes(t *testing.T) {
 	output := "mg-bd-a1b2\t%5\n\t%0\nmg-bd-c3d4\t%8\n\t%1\n"
 	agents := parseAgentPanes(output)

@@ -13,7 +13,7 @@
 Mardi Gras is a terminal UI for [Beads](https://github.com/steveyegge/beads) that turns your issue list into a living parade: what's moving, what's waiting, what's blocked, and what's already behind you.
 
 It's fast, visual, and joyful.
-One binary. No config. Just `mg`.
+One binary. No setup. Just `mg`.
 
 <!-- Demo GIF: regenerate with `make demo-gif` (drives the fake Gas City supervisor via testdata/vhs/demo.tape) -->
 ![Mardi Gras TUI](docs/screenshots/demo.gif)
@@ -135,9 +135,13 @@ Issues are grouped into parade sections: **Rolling** (in progress), **Lined Up**
 
 See the [parade and filtering guide](docs/filtering.md) for the full breakdown of sections, the detail panel, filtering syntax, and the command palette.
 
+## Themes
+
+Press `T` to open a live-preview theme picker. It includes the five palettes from [Tuxedo](https://github.com/webstonehq/tuxedo) — **Muted Slate**, **Dawn**, **Nord**, **Matrix**, and terminal-palette-aware **Terminal** — plus the original Mardi Gras palette. Use `j`/`k` or arrow keys to preview, `enter` to keep a choice, and `esc` to restore the previous one. Accepted choices persist in your user config for future `mg` sessions.
+
 ## Agent Integration
 
-Press `a` to launch an AI agent on any issue. Supports [Claude Code](https://claude.com/claude-code), [Cursor](https://cursor.com), and [OpenAI Codex](https://github.com/openai/codex), with tmux-native multi-agent dispatch when running inside tmux. Choose between them with `--agent codex` / `--agent cursor` / `--agent claude` or the `MG_AGENT_RUNTIME` env var; otherwise mg picks the first one it finds on your PATH.
+Press `a` to choose an AI agent for any issue: [OpenAI Codex](https://github.com/openai/codex), [Claude Code](https://claude.com/claude-code), [Cursor CLI](https://cursor.com), or [GitHub Copilot](https://github.com/features/copilot). The picker shows missing CLIs too, and starts the selected tool with its permissive/yolo-equivalent mode. Inside tmux, Mardi Gras creates a detached **new window** and pre-fills a one-line Beads issue mention without submitting it; you review it and press `enter` yourself. `--agent codex` / `--agent cursor` / `--agent claude` / `--agent copilot` (or `MG_AGENT_RUNTIME`) selects the picker's initial choice. Gas Town and Gas City retain their `a` sling/dispatch workflows.
 
 See the [agent integration guide](docs/agents.md) for runtime detection, tmux dispatch, and requirements.
 
@@ -207,9 +211,8 @@ It is a visual lens on top of Beads. Beads remains the source of truth.
 
 ## Possible Future Ideas
 
-- Color themes (Catppuccin, Dracula)
 - Direct Dolt connection for sub-second polling
-- Multi-runtime agent dispatch (Gemini CLI, Copilot CLI)
+- Multi-runtime agent dispatch (Gemini CLI)
 
 No promises. Just dreams. PRs welcome.
 

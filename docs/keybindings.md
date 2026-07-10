@@ -10,6 +10,7 @@ Press `?` from anywhere to open the full help overlay.
 | `tab`        | Switch active pane         |
 | `?`          | Toggle help overlay        |
 | `: / Ctrl+K` | Open command palette      |
+| `T`          | Pick color theme (preview with `j` / `k`) |
 | `p`          | Toggle problems view (gt)  |
 | `D`          | Toggle doctor diagnostics overlay |
 
@@ -23,7 +24,7 @@ Press `?` from anywhere to open the full help overlay.
 | `c`          | Toggle closed issues                      |
 | `/`          | Enter filter mode                         |
 | `f`          | Toggle focus mode (my work + top priority)|
-| `a`          | Launch agent (tmux: new window)           |
+| `a`          | Choose agent (tmux: new window)           |
 | `A`          | Kill active agent on issue                |
 
 ## Quick Actions
@@ -59,7 +60,7 @@ Press `?` from anywhere to open the full help overlay.
 | `j` / `k`    | Scroll up/down            |
 | `esc`        | Back to parade pane        |
 | `/`          | Enter filter mode          |
-| `a`          | Launch agent               |
+| `a`          | Choose agent               |
 | `A`          | Kill active agent          |
 | `m`          | Mark active molecule step done |
 

@@ -17,6 +17,7 @@ import (
 	"github.com/matt-wright86/mardi-gras/internal/data"
 	"github.com/matt-wright86/mardi-gras/internal/gastown"
 	"github.com/matt-wright86/mardi-gras/internal/tmux"
+	"github.com/matt-wright86/mardi-gras/internal/ui"
 )
 
 // Alias SourceMode constants for convenience.
@@ -37,7 +38,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	noAnimations := flag.Bool("no-animations", false, "Disable confetti and header shimmer animations")
 	cmdTimeout := flag.Int("cmd-timeout", 0, "Command timeout in seconds (scales all external command timeouts; default 30)")
-	agentRuntime := flag.String("agent", "", "Preferred agent runtime: claude or cursor (default: claude if available, else cursor)")
+	agentRuntime := flag.String("agent", "", "Preferred agent runtime: codex, claude, cursor, or copilot (sets picker default)")
 	flag.Parse()
 
 	// MG_NO_ANIMATIONS=1 env var as alternative to --no-animations flag
@@ -70,6 +71,13 @@ func main() {
 	if *showVersion {
 		fmt.Println("mg", version)
 		return
+	}
+
+	// Restore the last accepted palette before the app builds any views. A
+	// missing or malformed preference is deliberately non-fatal: first run and
+	// a manually edited config should still open Mardi Gras normally.
+	if !*statusMode {
+		_ = ui.LoadThemePreference()
 	}
 
 	// Parse blocking types from flag, env var, or default

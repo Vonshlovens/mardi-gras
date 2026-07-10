@@ -25,11 +25,22 @@ type paradeSection struct {
 	BorderVertical string
 }
 
-var sections = []paradeSection{
-	{Title: "Rolling", Symbol: ui.SymRolling, Style: ui.SectionRolling, Color: ui.StatusRolling, Status: data.ParadeRolling, BorderVertical: lipgloss.NewStyle().Foreground(ui.StatusRolling).Render(ui.BoxVertical)},
-	{Title: "Lined Up", Symbol: ui.SymLinedUp, Style: ui.SectionLinedUp, Color: ui.StatusLinedUp, Status: data.ParadeLinedUp, BorderVertical: lipgloss.NewStyle().Foreground(ui.StatusLinedUp).Render(ui.BoxVertical)},
-	{Title: "Stalled", Symbol: ui.SymStalled, Style: ui.SectionStalled, Color: ui.StatusStalled, Status: data.ParadeStalled, BorderVertical: lipgloss.NewStyle().Foreground(ui.StatusStalled).Render(ui.BoxVertical)},
-	{Title: "Past the Stand", Symbol: ui.SymPassed, Style: ui.SectionPassed, Color: ui.StatusPassed, Status: data.ParadePastTheStand, BorderVertical: lipgloss.NewStyle().Foreground(ui.StatusPassed).Render(ui.BoxVertical)},
+var sections = newParadeSections()
+
+func newParadeSections() []paradeSection {
+	return []paradeSection{
+		{Title: "Rolling", Symbol: ui.SymRolling, Style: ui.SectionRolling, Color: ui.StatusRolling, Status: data.ParadeRolling, BorderVertical: lipgloss.NewStyle().Foreground(ui.StatusRolling).Render(ui.BoxVertical)},
+		{Title: "Lined Up", Symbol: ui.SymLinedUp, Style: ui.SectionLinedUp, Color: ui.StatusLinedUp, Status: data.ParadeLinedUp, BorderVertical: lipgloss.NewStyle().Foreground(ui.StatusLinedUp).Render(ui.BoxVertical)},
+		{Title: "Stalled", Symbol: ui.SymStalled, Style: ui.SectionStalled, Color: ui.StatusStalled, Status: data.ParadeStalled, BorderVertical: lipgloss.NewStyle().Foreground(ui.StatusStalled).Render(ui.BoxVertical)},
+		{Title: "Past the Stand", Symbol: ui.SymPassed, Style: ui.SectionPassed, Color: ui.StatusPassed, Status: data.ParadePastTheStand, BorderVertical: lipgloss.NewStyle().Foreground(ui.StatusPassed).Render(ui.BoxVertical)},
+	}
+}
+
+// RefreshTheme rebuilds the section snapshots that embed UI styles and
+// pre-rendered border glyphs. Call it after ui.SetThemeIndex before rebuilding
+// the parade's items.
+func RefreshTheme() {
+	sections = newParadeSections()
 }
 
 // ParadeItem is a renderable entry — a section header, footer, or issue.
@@ -90,6 +101,10 @@ func NewParadeWithData(
 	if issueMap == nil {
 		issueMap = data.BuildIssueMap(issues)
 	}
+	// The UI package can restore a persisted theme before the first model is
+	// constructed. Refresh these embedded style snapshots at construction time
+	// so that initial parade uses that restored palette as well.
+	RefreshTheme()
 
 	p := Parade{
 		ShowClosed:    false,

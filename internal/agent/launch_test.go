@@ -111,6 +111,14 @@ func TestDetectRuntimeFallsBackToCodex(t *testing.T) {
 	}
 }
 
+func TestDetectRuntimeFallsBackToCopilot(t *testing.T) {
+	t.Setenv("MG_AGENT_RUNTIME", "")
+	withFakePath(t, "copilot")
+	if got := DetectRuntime(); got != RuntimeCopilot {
+		t.Errorf("expected copilot when it is the only binary on PATH, got %q", got)
+	}
+}
+
 func TestDetectRuntimeDefaultOrderPrefersCursorOverCodex(t *testing.T) {
 	t.Setenv("MG_AGENT_RUNTIME", "")
 	withFakePath(t, "cursor-agent", "codex")
@@ -124,6 +132,14 @@ func TestDetectRuntimeEnvOverrideToCodex(t *testing.T) {
 	t.Setenv("MG_AGENT_RUNTIME", "codex")
 	if got := DetectRuntime(); got != RuntimeCodex {
 		t.Errorf("MG_AGENT_RUNTIME=codex should select codex even when claude is on PATH, got %q", got)
+	}
+}
+
+func TestDetectRuntimeEnvOverrideToCopilot(t *testing.T) {
+	withFakePath(t, "claude", "cursor-agent", "codex", "copilot")
+	t.Setenv("MG_AGENT_RUNTIME", "github-copilot")
+	if got := DetectRuntime(); got != RuntimeCopilot {
+		t.Errorf("MG_AGENT_RUNTIME=github-copilot should select copilot, got %q", got)
 	}
 }
 
@@ -160,8 +176,9 @@ func TestRuntimeLabel(t *testing.T) {
 		want    string
 	}{
 		{RuntimeClaude, "Claude Code"},
-		{RuntimeCursor, "Cursor"},
+		{RuntimeCursor, "Cursor CLI"},
 		{RuntimeCodex, "Codex"},
+		{RuntimeCopilot, "GitHub Copilot"},
 		{Runtime(""), "unknown"},
 		{Runtime("frobnicate"), "unknown"},
 	}
@@ -170,6 +187,46 @@ func TestRuntimeLabel(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("Runtime(%q).RuntimeLabel() = %q, want %q", tc.runtime, got, tc.want)
 		}
+	}
+}
+
+func TestInteractiveCommandUsesPermissionSkippingModes(t *testing.T) {
+	tests := []struct {
+		runtime Runtime
+		want    []string
+	}{
+		{RuntimeCodex, []string{"codex", "--dangerously-bypass-approvals-and-sandbox", "-C", "/tmp/project"}},
+		{RuntimeClaude, []string{"claude", "--dangerously-skip-permissions"}},
+		{RuntimeCursor, []string{"cursor-agent", "--yolo"}},
+		{RuntimeCopilot, []string{"copilot", "--allow-all"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.runtime.RuntimeLabel(), func(t *testing.T) {
+			cmd := InteractiveCommand(tt.runtime, "/tmp/project")
+			if cmd.Dir != "/tmp/project" {
+				t.Fatalf("Dir = %q, want /tmp/project", cmd.Dir)
+			}
+			if len(cmd.Args) != len(tt.want) {
+				t.Fatalf("Args = %v, want %v", cmd.Args, tt.want)
+			}
+			for i, want := range tt.want {
+				if cmd.Args[i] != want {
+					t.Errorf("arg[%d] = %q, want %q", i, cmd.Args[i], want)
+				}
+			}
+		})
+	}
+}
+
+func TestBriefPromptIsSingleLineAndUnsubmitted(t *testing.T) {
+	issue := data.Issue{ID: "mg-42", Title: "Fix\n  the\t parade"}
+	got := BriefPrompt(issue)
+	if got != "Work on Beads issue mg-42: Fix the parade" {
+		t.Fatalf("BriefPrompt() = %q", got)
+	}
+	if strings.Contains(got, "\n") {
+		t.Fatalf("brief prompt must not contain a newline: %q", got)
 	}
 }
 
@@ -367,6 +424,13 @@ func TestCommandDir(t *testing.T) {
 		}
 		if cmd.Args[len(cmd.Args)-1] != "hello world" {
 			t.Errorf("expected prompt at last arg, got %q", cmd.Args[len(cmd.Args)-1])
+		}
+	case RuntimeCopilot:
+		if len(cmd.Args) != 4 {
+			t.Fatalf("expected 4 args for copilot, got %d: %v", len(cmd.Args), cmd.Args)
+		}
+		if cmd.Args[0] != "copilot" || cmd.Args[1] != "-i" || cmd.Args[2] != "hello world" || cmd.Args[3] != "--allow-all" {
+			t.Errorf("unexpected copilot args: %v", cmd.Args)
 		}
 	default:
 		t.Skip("no agent runtime on PATH")

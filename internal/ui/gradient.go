@@ -48,6 +48,11 @@ func ApplyMardiGrasGradient(text string) string {
 	if width == 0 {
 		return ""
 	}
+	// Tuxedo's Terminal theme deliberately lets the terminal own the palette.
+	// Do not turn its ANSI accents into calculated true-colour gradients.
+	if CurrentTheme().Terminal {
+		return lipgloss.NewStyle().Foreground(BrightGold).Render(text)
+	}
 
 	c1 := toColorful(Purple)
 	c2 := toColorful(Gold)
@@ -77,6 +82,9 @@ func ApplyShimmerGradient(text string, offset float64) string {
 	width := len(runes)
 	if width == 0 {
 		return ""
+	}
+	if CurrentTheme().Terminal {
+		return lipgloss.NewStyle().Foreground(BrightGold).Render(text)
 	}
 
 	c1 := toColorful(Purple)
@@ -181,20 +189,60 @@ func GradientBar(pct float64, width int, g Gradient) string {
 	return b.String()
 }
 
-// Pre-built gradients for common use cases.
+// Pre-built gradients for common use cases. They are recalculated with the
+// active theme so list heat, progress, and header colour never retain a
+// previous palette after a live preview.
 var (
-	// GradientProgress: green → gold → red (for progress bars, budgets).
-	GradientProgress = NewGradient(BrightGreen, BrightGold, lipgloss.Color("#E74C3C"))
-
-	// GradientHeat: green → orange → red (for age/staleness).
-	GradientHeat = NewGradient(BrightGreen, lipgloss.Color("#E67E22"), lipgloss.Color("#E74C3C"))
-
-	// GradientPurpleGold: purple → gold (Mardi Gras themed, for selection proximity).
-	GradientPurpleGold = NewGradient2(DimPurple, BrightGold)
-
-	// GradientFade: bright → dim (for list item positional fading).
-	GradientFade = NewGradient2(White, Dim)
+	GradientProgress   Gradient
+	GradientHeat       Gradient
+	GradientPurpleGold Gradient
+	GradientFade       Gradient
 )
+
+func init() {
+	rebuildGradients()
+}
+
+func rebuildGradients() {
+	styleCache = make(map[string]lipgloss.Style)
+	charCache = make(map[charKey]string)
+	GradientProgress = newThemedGradient(BrightGreen, BrightGold, StatusStalled)
+	GradientHeat = newThemedGradient(BrightGreen, PrioP1, StatusStalled)
+	GradientPurpleGold = newThemedGradient2(DimPurple, BrightGold)
+	GradientFade = newThemedGradient2(White, Dim)
+}
+
+func newThemedGradient(start, mid, end color.Color) Gradient {
+	if CurrentTheme().Terminal {
+		return newSteppedGradient(start, mid, end)
+	}
+	return NewGradient(start, mid, end)
+}
+
+func newThemedGradient2(start, end color.Color) Gradient {
+	if CurrentTheme().Terminal {
+		return newSteppedGradient(start, start, end)
+	}
+	return NewGradient2(start, end)
+}
+
+// newSteppedGradient preserves ANSI colours for Terminal rather than blending
+// them into true-colour values. It is also a sensible fallback for terminals
+// with a limited palette.
+func newSteppedGradient(start, mid, end color.Color) Gradient {
+	var g Gradient
+	for i := range g {
+		c := start
+		switch {
+		case i > 66:
+			c = end
+		case i > 33:
+			c = mid
+		}
+		g[i] = lipgloss.NewStyle().Foreground(c)
+	}
+	return g
+}
 
 // ApplyPartialMardiGrasGradient applies the gradient as if the text was `totalLength` characters long,
 // ensuring a partial progress bar maps to the correct segment of the full color spectrum.
@@ -202,6 +250,9 @@ func ApplyPartialMardiGrasGradient(text string, totalLength int) string {
 	runes := []rune(text)
 	if totalLength == 0 {
 		return ""
+	}
+	if CurrentTheme().Terminal {
+		return lipgloss.NewStyle().Foreground(BrightGold).Render(string(runes))
 	}
 
 	c1 := toColorful(Purple)

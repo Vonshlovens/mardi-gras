@@ -25,52 +25,52 @@ func WindowName(issueID string) string {
 	return "mg-" + issueID
 }
 
-// LaunchInTmux opens a new tmux pane running claude to the right of the current pane.
-func LaunchInTmux(prompt, projectDir, issueID string) (string, error) {
-	paneName := WindowName(issueID)
-	// Build agent command based on detected runtime
-	var agentArgs []string
-	switch DetectRuntime() {
-	case RuntimeCursor:
-		agentArgs = []string{"cursor-agent", "-f", "-p", prompt}
-	case RuntimeCodex:
-		// --no-alt-screen preserves tmux scrollback inside the split pane.
-		agentArgs = []string{"codex",
-			"--no-alt-screen",
-			"--sandbox", "workspace-write",
-			"-a", "on-request",
-			"-C", projectDir,
-			prompt}
-	default: // Claude Code
-		agentArgs = []string{"claude", "--teammate-mode", "tmux", prompt}
-	}
-
-	tmuxArgs := []string{"split-window",
-		"-h",        // vertical split (pane to the right)
-		"-l", "60%", // agent gets 60% of width
-		"-d", // don't switch focus
-		"-c", projectDir,
-		"-P", "-F", "#{pane_id}", // print the new pane ID
-		"--",
-	}
-	tmuxArgs = append(tmuxArgs, agentArgs...)
+// LaunchInTmux opens a detached tmux window for the selected runtime. The
+// issue draft is sent literally to the new pane without an Enter key, so the
+// user remains in control of when the agent receives it.
+func LaunchInTmux(runtime Runtime, projectDir, issueID, draft string) (string, error) {
+	windowName := WindowName(issueID)
+	agentArgs := InteractiveCommand(runtime, projectDir).Args
+	tmuxArgs := newWindowArgs(projectDir, windowName, agentArgs)
 	cmd := exec.Command("tmux", tmuxArgs...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("tmux split-window: %w", err)
+		return "", fmt.Errorf("tmux new-window: %w", err)
 	}
 	paneID := strings.TrimSpace(string(out))
 
-	// Tag the pane with our naming convention so we can find it later.
-	// tmux doesn't name panes, but we can set an environment variable.
+	// Tag the first pane in the agent window so state polling, capture, and
+	// kill/select operations can continue to use the stable pane ID.
 	_ = exec.Command("tmux", "set-option", "-p", "-t", paneID,
-		"@mg_agent", paneName).Run()
+		"@mg_agent", windowName).Run()
+
+	// -l sends the text literally. Crucially, do not send Enter: the draft
+	// stays in the agent's composer until the user reviews and submits it.
+	// tmux buffers terminal input while the CLI initializes, so this also works
+	// for agents that take a moment to render their interactive prompt.
+	if draft != "" {
+		_ = exec.Command("tmux", "send-keys", "-t", paneID, "-l", "--", draft).Run()
+	}
 
 	return paneID, nil
 }
 
-// ListAgentWindows returns a map of issueID -> paneID for all tmux panes
-// tagged with the @mg_agent option.
+// newWindowArgs constructs the tmux invocation used by LaunchInTmux. Keeping
+// it separate makes the window (rather than split-pane) contract easy to test.
+func newWindowArgs(projectDir, windowName string, agentArgs []string) []string {
+	args := []string{
+		"new-window",
+		"-d", // don't switch focus away from Mardi Gras
+		"-c", projectDir,
+		"-n", windowName,
+		"-P", "-F", "#{pane_id}", // print the first pane ID for tracking
+		"--",
+	}
+	return append(args, agentArgs...)
+}
+
+// ListAgentWindows returns a map of issueID -> first-pane ID for all tmux
+// agent windows tagged with the @mg_agent option.
 func ListAgentWindows() (map[string]string, error) {
 	// List all panes with their @mg_agent value and pane_id.
 	out, err := exec.Command("tmux", "list-panes", "-a",
@@ -100,18 +100,19 @@ func parseAgentPanes(output string) map[string]string {
 	return agents
 }
 
-// KillAgentWindow closes the tmux pane for the given issue.
+// KillAgentWindow closes the tmux window for the given issue.
 func KillAgentWindow(issueID string) error {
-	// Find the pane ID first.
+	// Find the first pane ID first; tmux accepts a pane target for kill-window
+	// and resolves it to that pane's containing window.
 	agents, err := ListAgentWindows()
 	if err != nil {
 		return err
 	}
 	paneID, ok := agents[issueID]
 	if !ok {
-		return fmt.Errorf("no agent pane for %s", issueID)
+		return fmt.Errorf("no agent window for %s", issueID)
 	}
-	return exec.Command("tmux", "kill-pane", "-t", paneID).Run()
+	return exec.Command("tmux", "kill-window", "-t", paneID).Run()
 }
 
 // CapturePane captures the last maxLines of output from an agent's tmux pane.
@@ -178,7 +179,7 @@ func stripANSI(s string) string {
 	}, s)
 }
 
-// SelectAgentWindow switches focus to the tmux pane for the given issue.
+// SelectAgentWindow switches focus to the tmux window for the given issue.
 func SelectAgentWindow(issueID string) error {
 	agents, err := ListAgentWindows()
 	if err != nil {
@@ -186,7 +187,7 @@ func SelectAgentWindow(issueID string) error {
 	}
 	paneID, ok := agents[issueID]
 	if !ok {
-		return fmt.Errorf("no agent pane for %s", issueID)
+		return fmt.Errorf("no agent window for %s", issueID)
 	}
-	return exec.Command("tmux", "select-pane", "-t", paneID).Run()
+	return exec.Command("tmux", "select-window", "-t", paneID).Run()
 }

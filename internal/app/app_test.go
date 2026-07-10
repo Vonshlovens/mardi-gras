@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -57,6 +58,34 @@ func TestFileChangedMsgPreservesSelectionAndClosedState(t *testing.T) {
 	}
 	if got.parade.SelectedIssue == nil || got.parade.SelectedIssue.ID != "open-2" {
 		t.Fatalf("expected selected issue open-2 after refresh, got %+v", got.parade.SelectedIssue)
+	}
+}
+
+func TestFileChangedMsgPreservesDetailScrollForSameSelection(t *testing.T) {
+	issue := testIssue("open-1", data.StatusOpen)
+	issue.Description = strings.Repeat("A sufficiently long description line.\n", 40)
+
+	m := New([]data.Issue{issue}, data.Source{}, data.DefaultBlockingTypes)
+	m.startedAt = time.Now().Add(-time.Second) // bypass startup guard
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	got := model.(Model)
+	got.detail.Viewport.SetYOffset(7)
+	if got.detail.Viewport.YOffset() != 7 {
+		t.Fatalf("expected setup to scroll detail to 7, got %d", got.detail.Viewport.YOffset())
+	}
+
+	// File reloads replace Issue values, but the same selected ID should not
+	// kick a reader back to the top of a long description.
+	refreshed := issue
+	refreshed.Description += "Updated while reading.\n"
+	model, _ = got.Update(data.FileChangedMsg{Issues: []data.Issue{refreshed}})
+	got = model.(Model)
+
+	if got.detail.Issue == nil || got.detail.Issue.ID != issue.ID {
+		t.Fatalf("expected same selected issue after refresh, got %+v", got.detail.Issue)
+	}
+	if got.detail.Viewport.YOffset() != 7 {
+		t.Fatalf("detail scroll after same-issue refresh = %d, want 7", got.detail.Viewport.YOffset())
 	}
 }
 

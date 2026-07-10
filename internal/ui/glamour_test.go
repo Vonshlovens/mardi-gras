@@ -57,3 +57,28 @@ func TestMardiGrasGlamourStyleDoesNotMutateBase(t *testing.T) {
 		t.Errorf("repeated calls disagree: %q vs %q", *a.H1.Color, *b.H1.Color)
 	}
 }
+
+func TestMardiGrasGlamourStyleFollowsActiveTheme(t *testing.T) {
+	original := CurrentThemeIndex()
+	t.Cleanup(func() { SetThemeIndex(original) })
+
+	if _, ok := SetTheme("Dawn"); !ok {
+		t.Fatal("expected Dawn theme")
+	}
+	c := MardiGrasGlamourStyle()
+	if got := deref(t, c.H1.Color, "Dawn H1.Color"); got != "#A35D3A" {
+		t.Errorf("Dawn H1.Color = %q, want #A35D3A", got)
+	}
+	if got := deref(t, c.Heading.Color, "Dawn Heading.Color"); got != "#7A4A8A" {
+		t.Errorf("Dawn Heading.Color = %q, want #7A4A8A", got)
+	}
+	if got := deref(t, c.Code.Color, "Dawn Code.Color"); got != "#5A7A3A" {
+		t.Errorf("Dawn Code.Color = %q, want #5A7A3A", got)
+	}
+
+	SetTheme("Terminal")
+	terminal := MardiGrasGlamourStyle()
+	if terminal.H1.Color != nil || terminal.H1.BackgroundColor != nil {
+		t.Errorf("Terminal glamour style should not inject a fixed palette: %+v", terminal.H1.StylePrimitive)
+	}
+}
