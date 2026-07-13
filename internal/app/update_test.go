@@ -6,8 +6,10 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/matt-wright86/mardi-gras/internal/components"
 	"github.com/matt-wright86/mardi-gras/internal/data"
+	"github.com/matt-wright86/mardi-gras/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -256,6 +258,49 @@ func TestViewWithHelp(t *testing.T) {
 
 	if normalView.Content == helpView.Content {
 		t.Fatal("expected View() output to differ when showHelp is true")
+	}
+}
+
+func TestViewPaintsThemeBackgroundAcrossFrameAndOverlay(t *testing.T) {
+	original := ui.CurrentThemeIndex()
+	t.Cleanup(func() { ui.SetThemeIndex(original) })
+	if _, ok := ui.SetTheme("Dawn"); !ok {
+		t.Fatal("expected Dawn theme to be available")
+	}
+
+	issues := []data.Issue{testIssue("open-1", data.StatusOpen)}
+	m := New(issues, data.Source{}, data.DefaultBlockingTypes)
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	got := model.(Model)
+
+	assertFramed := func(name, content, background string) {
+		t.Helper()
+		if width, height := lipgloss.Size(content); width != 100 || height != 20 {
+			t.Fatalf("%s frame size = %dx%d, want 100x20", name, width, height)
+		}
+		if !strings.Contains(content, background) {
+			t.Fatalf("%s is missing the selected full-frame background", name)
+		}
+	}
+
+	const dawnBackground = "\x1b[48;2;250;246;240m"
+	assertFramed("Dawn main view", got.View().Content, dawnBackground)
+
+	got.themePicking = true
+	assertFramed("Dawn theme picker", got.View().Content, dawnBackground)
+	got.themePicking = false
+
+	if _, ok := ui.SetTheme("Nord"); !ok {
+		t.Fatal("expected Nord theme to be available")
+	}
+	assertFramed("Nord main view", got.View().Content, "\x1b[48;2;46;52;64m")
+
+	ui.SetTheme("Terminal")
+	if _, ok := got.frameStyle().GetBackground().(lipgloss.NoColor); !ok {
+		t.Fatal("Terminal frame should preserve NoColor background")
+	}
+	if strings.Contains(got.framedView("terminal").Content, "\x1b[48;") {
+		t.Fatal("Terminal frame should not emit a background colour")
 	}
 }
 

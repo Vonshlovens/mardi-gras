@@ -235,6 +235,62 @@ func TestKeyAOpensAgentPickerWhenCachedAvailabilityIsFalse(t *testing.T) {
 	}
 }
 
+func TestKeyAOpensAgentPickerOutsideActiveGasTownSession(t *testing.T) {
+	got := setupModel(t)
+	got.gtEnv = gastown.Env{Available: true, Active: false}
+	got.driver = gastown.NewGTDriver()
+
+	model, cmd := got.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	got = model.(Model)
+
+	if cmd != nil {
+		t.Fatal("opening the local agent picker should not invoke gt sling")
+	}
+	if !got.agentPicking {
+		t.Fatal("expected a to open the local agent picker outside an active Gas Town session")
+	}
+}
+
+func TestKeyASlingsInsideActiveGasTownSession(t *testing.T) {
+	got := setupModel(t)
+	got.gtEnv = gastown.Env{Available: true, Active: true}
+	got.driver = gastown.NewGTDriver()
+
+	model, cmd := got.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	got = model.(Model)
+
+	if cmd == nil {
+		t.Fatal("expected active Gas Town session to sling the selected issue")
+	}
+	if got.agentPicking {
+		t.Fatal("active Gas Town session should not open the local agent picker")
+	}
+}
+
+func TestKeyAGasCityStillOpensTargetDispatch(t *testing.T) {
+	gc, err := gastown.NewGCDriver("http://127.0.0.1:8080", "")
+	if err != nil {
+		t.Fatalf("NewGCDriver: %v", err)
+	}
+
+	got := setupModel(t)
+	got.gtEnv = gastown.Env{Available: true, Active: false}
+	got.driver = gc
+
+	model, cmd := got.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	got = model.(Model)
+
+	if cmd == nil {
+		t.Fatal("expected Gas City target input blink command")
+	}
+	if !got.slingTargeting {
+		t.Fatal("expected Gas City to retain explicit target dispatch")
+	}
+	if got.agentPicking {
+		t.Fatal("Gas City dispatch should not open the local agent picker")
+	}
+}
+
 func TestAgentPickerCancellationClearsTarget(t *testing.T) {
 	got := setupModel(t)
 	got.agentPicking = true
@@ -668,7 +724,7 @@ func TestFormulaListMsgEmptyFallback(t *testing.T) {
 
 func TestKeyAMultiSlingWithSelection(t *testing.T) {
 	got := setupModel(t)
-	got.gtEnv.Available = true
+	got.gtEnv = gastown.Env{Available: true, Active: true}
 
 	// Select current item
 	model, _ := got.Update(tea.KeyPressMsg{Code: ' ', Text: " "})

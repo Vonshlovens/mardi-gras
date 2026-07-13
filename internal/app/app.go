@@ -2247,7 +2247,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 		// Multi-sling with Gas Town
-		if selected := m.parade.SelectedIssues(); len(selected) > 0 && m.gtEnv.Available {
+		if selected := m.parade.SelectedIssues(); len(selected) > 0 && m.gtEnv.Active {
 			ids := make([]string, len(selected))
 			for i, iss := range selected {
 				ids[i] = iss.ID
@@ -2270,7 +2270,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		if m.gtEnv.Available {
+		if m.gtEnv.Active {
 			issueID := issue.ID
 			runtime := m.agentRuntime
 			driver := m.driver
@@ -3309,7 +3309,8 @@ func (m *Model) detailFetchBatch() []tea.Cmd {
 func (m *Model) layout() {
 	headerH := 2
 	footerH := 2
-	bodyH := m.height - headerH - footerH
+	dividerH := 1
+	bodyH := m.height - headerH - footerH - dividerH
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -3391,7 +3392,7 @@ func (m *Model) rebuildParade() {
 		paradeW = m.width * 2 / 5
 	}
 	if bodyH == 0 {
-		bodyH = m.height - 4
+		bodyH = m.height - 5
 	}
 
 	filteredIssues, highlights := data.FilterIssuesWithHighlights(m.issues, m.filterInput.Value())
@@ -3745,6 +3746,24 @@ func altView(s string) tea.View {
 	return v
 }
 
+// framedView paints the current theme across the whole terminal, including
+// unused body cells and the padding around centered overlays. Terminal uses a
+// NoColor background, so it deliberately leaves the user's terminal palette
+// untouched.
+func (m Model) framedView(content string) tea.View {
+	if m.width <= 0 || m.height <= 0 {
+		return altView(content)
+	}
+	return altView(m.frameStyle().Render(content))
+}
+
+func (m Model) frameStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		Background(ui.Background)
+}
+
 // newLoadingSpinner returns the gold spinner shown on the branded loading splash.
 func newLoadingSpinner() spinner.Model {
 	return spinner.New(
@@ -3765,7 +3784,7 @@ func (m Model) loadingView() string {
 // View implements tea.Model.
 func (m Model) View() tea.View {
 	if !m.ready {
-		return altView(m.loadingView())
+		return m.framedView(m.loadingView())
 	}
 
 	header := m.header.View()
@@ -3853,22 +3872,22 @@ func (m Model) View() tea.View {
 
 	if m.themePicking {
 		m.themePicker.SetSize(m.width, m.height)
-		return altView(m.themePicker.View())
+		return m.framedView(m.themePicker.View())
 	}
 
 	if m.agentPicking {
 		m.agentPicker.SetSize(m.width, m.height)
-		return altView(m.agentPicker.View())
+		return m.framedView(m.agentPicker.View())
 	}
 
 	if m.showPalette {
-		return altView(m.palette.View())
+		return m.framedView(m.palette.View())
 	}
 
 	if m.showHelp {
 		m.help.SetSize(m.width, m.height)
 		helpModal := m.help.View()
-		return altView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, helpModal))
+		return m.framedView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, helpModal))
 	}
 
 	if m.editing {
@@ -3877,7 +3896,7 @@ func (m Model) View() tea.View {
 		formHint := ui.HelpHint.Render("esc to cancel  enter to save")
 		formContent := lipgloss.JoinVertical(lipgloss.Left, formTitle, "", formBody, "", formHint)
 		formBox := ui.HelpOverlayBg.Width(m.width - 8).Render(formContent)
-		return altView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, formBox))
+		return m.framedView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, formBox))
 	}
 
 	if m.creating {
@@ -3886,7 +3905,7 @@ func (m Model) View() tea.View {
 		formHint := ui.HelpHint.Render("esc to cancel")
 		formContent := lipgloss.JoinVertical(lipgloss.Left, formTitle, "", formBody, "", formHint)
 		formBox := ui.HelpOverlayBg.Width(m.width - 8).Render(formContent)
-		return altView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, formBox))
+		return m.framedView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, formBox))
 	}
 
 	if m.approving {
@@ -3894,7 +3913,7 @@ func (m Model) View() tea.View {
 		adBody := m.approvalDialog.View()
 		adContent := lipgloss.JoinVertical(lipgloss.Left, adTitle, "", adBody)
 		adBox := ui.HelpOverlayBg.Width(m.width - 8).Render(adContent)
-		return altView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, adBox))
+		return m.framedView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, adBox))
 	}
 
 	if m.recovering {
@@ -3903,10 +3922,10 @@ func (m Model) View() tea.View {
 		rdHint := ui.HelpHint.Render("enter to confirm  esc to cancel")
 		rdContent := lipgloss.JoinVertical(lipgloss.Left, rdTitle, "", rdBody, "", rdHint)
 		rdBox := ui.HelpOverlayBg.Width(m.width - 8).Render(rdContent)
-		return altView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, rdBox))
+		return m.framedView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, rdBox))
 	}
 
-	return altView(screen)
+	return m.framedView(screen)
 }
 
 // overlayStrings composites non-space characters from overlay onto base.
