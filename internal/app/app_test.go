@@ -89,6 +89,64 @@ func TestFileChangedMsgPreservesDetailScrollForSameSelection(t *testing.T) {
 	}
 }
 
+func TestFileChangedMsgUnchangedSnapshotKeepsFooterAge(t *testing.T) {
+	issue := testIssue("open-1", data.StatusOpen)
+	m := New([]data.Issue{issue}, data.Source{Mode: data.SourceCLI}, data.DefaultBlockingTypes)
+	lastChange := time.Now().Add(-10 * time.Second).Round(0)
+	m.lastFileMod = lastChange
+
+	model, _ := m.Update(data.FileChangedMsg{
+		Issues:  []data.Issue{issue},
+		LastMod: time.Now(),
+	})
+	got := model.(Model)
+
+	if !got.lastFileMod.Equal(lastChange) {
+		t.Fatalf("unchanged CLI poll reset footer age to %v, want %v", got.lastFileMod, lastChange)
+	}
+}
+
+func TestFileChangedMsgUpdatedSnapshotRefreshesFooterAge(t *testing.T) {
+	issue := testIssue("open-1", data.StatusOpen)
+	m := New([]data.Issue{issue}, data.Source{Mode: data.SourceCLI}, data.DefaultBlockingTypes)
+	m.startedAt = time.Now().Add(-time.Second)
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	got := model.(Model)
+
+	updated := issue
+	updated.Title = "Updated title"
+	refreshedAt := time.Now().Round(0)
+	model, _ = got.Update(data.FileChangedMsg{
+		Issues:  []data.Issue{updated},
+		LastMod: refreshedAt,
+	})
+	got = model.(Model)
+
+	if !got.lastFileMod.Equal(refreshedAt) {
+		t.Fatalf("updated CLI snapshot footer age = %v, want %v", got.lastFileMod, refreshedAt)
+	}
+}
+
+func TestClockTickPreservesDetailScroll(t *testing.T) {
+	issue := testIssue("open-1", data.StatusOpen)
+	issue.Description = strings.Repeat("A sufficiently long description line.\n", 40)
+	m := New([]data.Issue{issue}, data.Source{}, data.DefaultBlockingTypes)
+	m.startedAt = time.Now().Add(-time.Second)
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	got := model.(Model)
+	got.detail.Viewport.SetYOffset(7)
+
+	model, cmd := got.Update(clockTickMsg{})
+	got = model.(Model)
+
+	if cmd == nil {
+		t.Fatal("expected clock tick to schedule the next redraw")
+	}
+	if got.detail.Viewport.YOffset() != 7 {
+		t.Fatalf("clock tick changed detail scroll to %d, want 7", got.detail.Viewport.YOffset())
+	}
+}
+
 func TestFileChangedMsgAppliesPendingSelectionOverride(t *testing.T) {
 	issues := []data.Issue{
 		testIssue("open-1", data.StatusOpen),

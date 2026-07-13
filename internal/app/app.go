@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -282,6 +283,10 @@ func NewWithGuard(issues []data.Issue, source data.Source, blockingTypes map[str
 		if mod, err := data.FileModTime(watchPath); err == nil {
 			lastFileMod = mod
 		}
+	} else if source.Mode == data.SourceCLI {
+		// The initial CLI snapshot was just loaded by main. Treat it as fresh
+		// data so the footer age can advance until the first real change.
+		lastFileMod = time.Now()
 	}
 	ti := textinput.New()
 	ti.Prompt = ui.InputPrompt.Render("/ ")
@@ -341,6 +346,7 @@ func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		m.startPoll(),
 		agentPoll,
+		clockTickCmd(),
 	}
 	if !m.noAnimations {
 		cmds = append(cmds, headerShimmerCmd(), m.spinner.Tick)
@@ -1286,6 +1292,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.startPoll(),
 			m.gatedPollAgentState(),
 		}
+		issuesChanged := !reflect.DeepEqual(m.issues, msg.Issues)
 
 		// Warn if malformed lines were skipped
 		if msg.Skipped > 0 {
@@ -1295,6 +1302,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			)
 			m.toast = toast
 			cmds = append(cmds, toastCmd)
+		}
+
+		// bd list is polled even when its output is unchanged. Do not stamp that
+		// no-op read as a new snapshot: it made the footer age snap back to 0s
+		// every poll rather than showing how old the displayed data is.
+		if !issuesChanged && m.pendingSelectID == "" {
+			return m, tea.Batch(cmds...)
 		}
 
 		// Diff against previous state for change indicators
@@ -1938,6 +1952,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case headerShimmerMsg:
 		m.beadOffset++
 		return m, headerShimmerCmd()
+
+	case clockTickMsg:
+		// Keep time-based labels (including the Beads snapshot age) live even
+		// when decorative animations are disabled. This does not rebuild the
+		// parade or detail viewport, so it cannot disturb the reader's scroll.
+		return m, clockTickCmd()
 
 	case components.ToastDismissMsg:
 		m.toast = components.Toast{}
@@ -3622,11 +3642,23 @@ func (m *Model) gatedPollAgentState() tea.Cmd {
 
 const gasTownTickInterval = 1 * time.Second
 const headerShimmerInterval = 500 * time.Millisecond
+const clockTickInterval = 1 * time.Second
 
 // headerShimmerCmd returns a Cmd that fires a headerShimmerMsg for bead animation.
 func headerShimmerCmd() tea.Cmd {
 	return tea.Tick(headerShimmerInterval, func(time.Time) tea.Msg {
 		return headerShimmerMsg{}
+	})
+}
+
+// clockTickMsg prompts Bubble Tea to redraw labels derived from time.Now.
+type clockTickMsg struct{}
+
+// clockTickCmd schedules the next time-label redraw. It is deliberately
+// independent from visual animations, which users may disable.
+func clockTickCmd() tea.Cmd {
+	return tea.Tick(clockTickInterval, func(time.Time) tea.Msg {
+		return clockTickMsg{}
 	})
 }
 
